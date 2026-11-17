@@ -1,0 +1,35 @@
+name: Tests
+on: [push, pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: sumup
+          POSTGRES_DB: sumup
+          POSTGRES_PASSWORD: test-only-password
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U sumup" --health-interval 5s --health-retries 10
+    env:
+      TEST_POSTGRES: "1"
+      POSTGRES_HOST: localhost
+      POSTGRES_PASSWORD: test-only-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check . && ruff format --check .
+      - run: python manage.py check --settings=config.test_settings
+      - run: python manage.py makemigrations --check --dry-run --settings=config.test_settings
+      - run: pytest -q
+      - run: docker build -t sumup-processor:test .

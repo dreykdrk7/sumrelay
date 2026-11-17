@@ -1,0 +1,1406 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "SumRelay API",
+    "version": "1.0.0",
+    "description": "Una instalación por SaaS y comercio. API exclusiva de servidor. Importes decimales como cadenas. El retorno del navegador no confirma un pago.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "contact": {
+      "name": "SumRelay community",
+      "url": "https://github.com/dreykdrk7/sumrelay/issues"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "Desarrollo local. Configura el origen HTTPS de tu instalación en producción."
+    }
+  ],
+  "security": [
+    {
+      "serverBearer": []
+    }
+  ],
+  "paths": {
+    "/api/v1/payments/": {
+      "post": {
+        "operationId": "createPayment",
+        "summary": "Crear o recuperar un intento por idempotencia",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePayment"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Repetición de un intento verificado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePaymentResult"
+                }
+              }
+            },
+            "headers": {
+              "Location": {
+                "description": "Ruta del pago persistido.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Intento registrado con resultado verificado. Consulta su estado antes de redirigir.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePaymentResult"
+                }
+              }
+            },
+            "headers": {
+              "Location": {
+                "description": "Ruta del pago persistido.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Intento registrado con incertidumbre. Conserva la clave de idempotencia.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePaymentResult"
+                }
+              }
+            },
+            "headers": {
+              "Location": {
+                "description": "Ruta del pago persistido.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Solicitud inválida.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial de servidor inválida.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicto de idempotencia, instantánea o intento bloqueado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "El cuerpo debe ser application/json.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Instalación o proveedor sin configurar.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "getPaymentByReference",
+        "summary": "Consultar por referencia exacta",
+        "parameters": [
+          {
+            "name": "reference",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Instantánea persistida del pago; no consulta SumUp.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Solicitud inválida.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial de servidor inválida.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Pago no encontrado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/payments/{payment_id}/": {
+      "get": {
+        "operationId": "getPayment",
+        "summary": "Consultar por identificador del pago",
+        "parameters": [
+          {
+            "name": "payment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Instantánea persistida del pago; no consulta SumUp.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credencial de servidor inválida.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Pago no encontrado.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/sumup/": {
+      "post": {
+        "operationId": "receiveSumUpHint",
+        "security": [],
+        "summary": "Solicitar verificación de un cambio con SumUp",
+        "description": "Pista no autenticada. El worker consulta SumUp antes de actualizar estados. Ignora tipos desconocidos.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "event_type": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string",
+                    "maxLength": 128
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Notificación aceptada o evento ignorado. Cuerpo vacío."
+          },
+          "400": {
+            "description": "Notificación inválida. Cuerpo vacío."
+          }
+        }
+      }
+    },
+    "/health/": {
+      "get": {
+        "operationId": "getHealth",
+        "security": [],
+        "summary": "Comprobar aplicación y base de datos",
+        "responses": {
+          "200": {
+            "description": "Conexión con la base disponible.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Base de datos no disponible.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/card-setups/": {
+      "post": {
+        "summary": "Registrar un alta de tarjeta; el token nunca se devuelve.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCardSetup"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardSetup"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardSetup"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/card-setups/{card_id}/": {
+      "get": {
+        "summary": "Verificar un instrumento y su mandato con SumUp.",
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardSetup"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/recurring-payments/": {
+      "post": {
+        "summary": "Crear o recuperar un cargo con tarjeta guardada; no reenvía un PUT incierto.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRecurringPayment"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/recurring-payments/cancel/": {
+      "post": {
+        "summary": "Cancelar por referencia, incluso antes de recibir una creación tardía.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRecurringPayment"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/payments/{payment_id}/cancel/": {
+      "post": {
+        "summary": "Cancelar intentos pendientes de un pago recurrente existente.",
+        "parameters": [
+          {
+            "name": "payment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "paymentUpdated": {
+      "post": {
+        "operationId": "receivePaymentUpdate",
+        "security": [
+          {
+            "webhookHmac": []
+          }
+        ],
+        "description": "POST al destino configurado por el administrador. Entrega al menos una vez durante 24 horas; el SaaS debe persistir y deduplicar el ID. Verifica HMAC sobre timestamp + punto + bytes originales. Los eventos pueden llegar fuera de orden: consulta el pago actual antes de entregar un pedido.",
+        "parameters": [
+          {
+            "name": "X-Webhook-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Webhook-Timestamp",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentUpdated"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Evento guardado o duplicado ya conocido."
+          },
+          "204": {
+            "description": "Evento guardado o duplicado ya conocido. Cuerpo vacío."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "serverBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "SAAS_API_KEYS. Solo servidor; mantener fuera de Next.js y del navegador."
+      },
+      "webhookHmac": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Webhook-Signature",
+        "description": "v1=<HMAC-SHA256 hexadecimal de timestamp + punto + cuerpo exacto>. Se calcula con SAAS_WEBHOOK_SECRET independiente; no se envía el secreto."
+      }
+    },
+    "schemas": {
+      "Amount": {
+        "type": "string",
+        "pattern": "^[0-9]{1,9}\\.[0-9]{2}$",
+        "examples": [
+          "19.95"
+        ]
+      },
+      "PaymentStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "paid",
+          "failed",
+          "expired",
+          "cancelled",
+          "partially_refunded",
+          "refunded"
+        ]
+      },
+      "CreatePayment": {
+        "type": "object",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "amount": {
+            "type": "string",
+            "pattern": "^[0-9]+(?:\\.[0-9]{1,2})?$",
+            "description": "Positivo, máximo 999999999.99. CLP exige un entero sin decimales.",
+            "examples": [
+              "19.95"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "BRL",
+              "CHF",
+              "CLP",
+              "COP",
+              "CZK",
+              "DKK",
+              "EUR",
+              "GBP",
+              "HUF",
+              "NOK",
+              "PLN",
+              "RON",
+              "SEK",
+              "USD"
+            ],
+            "description": "Debe estar habilitada en la instalación y aceptada por el comercio."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "return_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "Coincidencia exacta con un retorno permitido."
+          }
+        },
+        "required": [
+          "reference",
+          "amount",
+          "currency",
+          "description",
+          "return_url"
+        ],
+        "additionalProperties": false
+      },
+      "RefundEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "status": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "amount",
+          "status",
+          "occurred_at"
+        ],
+        "additionalProperties": false
+      },
+      "Attempt": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaymentStatus"
+          },
+          "uncertain": {
+            "type": "boolean"
+          },
+          "closed_confirmed": {
+            "type": "boolean"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "merchant_code": {
+            "type": "string"
+          },
+          "sumup_checkout_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sumup_checkout_reference": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "checkout_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "transaction_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transaction_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refunded_amount": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "refund_events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RefundEvent"
+            }
+          },
+          "paid_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "action_required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "uncertain",
+          "closed_confirmed",
+          "amount",
+          "currency",
+          "merchant_code",
+          "sumup_checkout_id",
+          "sumup_checkout_reference",
+          "checkout_url",
+          "transaction_id",
+          "transaction_code",
+          "refunded_amount",
+          "refund_events",
+          "paid_at",
+          "created_at",
+          "updated_at",
+          "expires_at",
+          "last_checked_at",
+          "last_error"
+        ],
+        "additionalProperties": false
+      },
+      "Payment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "merchant_code": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaymentStatus"
+          },
+          "uncertain": {
+            "type": "boolean"
+          },
+          "checkout_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "latest_attempt_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "refunded_amount": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attempt"
+            }
+          },
+          "saved_card_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "cancel_requested": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "reference",
+          "amount",
+          "currency",
+          "merchant_code",
+          "status",
+          "uncertain",
+          "checkout_url",
+          "latest_attempt_id",
+          "refunded_amount",
+          "created_at",
+          "attempts"
+        ],
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "PaymentUpdated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "type": {
+            "const": "payment.updated"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "payment": {
+            "$ref": "#/components/schemas/Payment"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "created_at",
+          "payment"
+        ],
+        "additionalProperties": false
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "unavailable"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "CreatePaymentResult": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "merchant_code": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaymentStatus"
+          },
+          "uncertain": {
+            "type": "boolean"
+          },
+          "checkout_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "latest_attempt_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "refunded_amount": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attempt"
+            }
+          },
+          "requested_attempt": {
+            "$ref": "#/components/schemas/Attempt"
+          }
+        },
+        "required": [
+          "id",
+          "reference",
+          "amount",
+          "currency",
+          "merchant_code",
+          "status",
+          "uncertain",
+          "checkout_url",
+          "latest_attempt_id",
+          "refunded_amount",
+          "created_at",
+          "attempts",
+          "requested_attempt"
+        ],
+        "additionalProperties": false
+      },
+      "CreateRecurringPayment": {
+        "type": "object",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "amount": {
+            "type": "string",
+            "pattern": "^[0-9]+(?:\\.[0-9]{1,2})?$",
+            "description": "Positivo, máximo 999999999.99. CLP exige un entero sin decimales.",
+            "examples": [
+              "19.95"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "BRL",
+              "CHF",
+              "CLP",
+              "COP",
+              "CZK",
+              "DKK",
+              "EUR",
+              "GBP",
+              "HUF",
+              "NOK",
+              "PLN",
+              "RON",
+              "SEK",
+              "USD"
+            ],
+            "description": "Debe estar habilitada en la instalación y aceptada por el comercio."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "return_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "Coincidencia exacta con un retorno permitido."
+          },
+          "saved_card_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "reference",
+          "amount",
+          "currency",
+          "description",
+          "return_url",
+          "saved_card_id"
+        ],
+        "additionalProperties": false
+      },
+      "CreateCardSetup": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reference",
+          "return_url"
+        ],
+        "properties": {
+          "reference": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "return_url": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
+      "CardSetup": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "reference",
+          "merchant_code",
+          "status",
+          "uncertain",
+          "sandbox",
+          "setup_checkout_id",
+          "last4",
+          "expires_at",
+          "last_error",
+          "checked_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "merchant_code": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "ready",
+              "failed",
+              "expired"
+            ]
+          },
+          "uncertain": {
+            "type": "boolean"
+          },
+          "sandbox": {
+            "type": "boolean"
+          },
+          "setup_checkout_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last4": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  }
+}

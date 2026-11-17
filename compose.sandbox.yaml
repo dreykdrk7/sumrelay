@@ -1,0 +1,26 @@
+# Uso exclusivo en localhost: scripts/sandbox.sh up
+services:
+  setup:
+    command: [sh, -c, "python manage.py check && python manage.py migrate --noinput && python manage.py collectstatic --noinput"]
+  web:
+    command: [python, manage.py, runserver, "0.0.0.0:8000", --noreload]
+  receiver:
+    build: .
+    command: [python, scripts/sandbox_receiver.py]
+    environment:
+      SAAS_WEBHOOK_SECRET: ${SAAS_WEBHOOK_SECRET:?Falta el secreto de notificaciones}
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - sandbox_events:/data
+    networks:
+      default:
+        aliases: [receiver.local]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+
+volumes:
+  sandbox_events:
