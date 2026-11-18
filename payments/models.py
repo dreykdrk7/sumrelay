@@ -5,6 +5,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 SUPPORTED_CURRENCIES = {
     "BRL": 2,
@@ -83,6 +84,7 @@ class SavedCard(models.Model):
     merchant_code = models.CharField(max_length=64)
     return_url = models.URLField(max_length=2048)
     setup_checkout_id = models.CharField(max_length=128, unique=True, null=True)
+    setup_transaction_id = models.CharField(max_length=128, blank=True, db_index=True)
     create_submitted_at = models.DateTimeField(null=True)
     status = models.CharField(max_length=16, default="pending")
     uncertain = models.BooleanField(default=True)
@@ -99,6 +101,42 @@ class SavedCard(models.Model):
         return f"sumrelay-{self.id}"
 
 
+class Subscription(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Activa"
+        BLOCKED = "blocked", "Bloqueada"
+        CANCELLED = "cancelled", "Cancelada"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    reference = models.CharField(max_length=120, unique=True)
+    saved_card = models.ForeignKey(SavedCard, on_delete=models.PROTECT)
+    amount = models.DecimalField(max_digits=11, decimal_places=2)
+    currency = models.CharField(max_length=3)
+    merchant_code = models.CharField(max_length=64)
+    description = models.CharField(max_length=500)
+    return_url = models.URLField(max_length=2048)
+    starts_on = models.DateField()
+    interval_months = models.PositiveSmallIntegerField()
+    next_due_on = models.DateField()
+    check_after = models.DateTimeField(default=timezone.now)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+    blocked_reason = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    cancelled_at = models.DateTimeField(null=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["status", "check_after", "next_due_on"])]
+        constraints = [
+            models.CheckConstraint(condition=Q(amount__gt=0), name="subscription_positive"),
+            models.CheckConstraint(
+                condition=Q(interval_months__range=(1, 12)), name="subscription_interval"
+            ),
+        ]
+
+    def __str__(self):
+        return self.reference
+
+
 class Payment(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     reference = models.CharField("Referencia del pedido", max_length=120, unique=True)
@@ -106,12 +144,26 @@ class Payment(models.Model):
     currency = models.CharField("Moneda", max_length=3)
     merchant_code = models.CharField("Comercio destinatario", max_length=64)
     saved_card = models.ForeignKey(SavedCard, on_delete=models.PROTECT, null=True, blank=True)
+    subscription = models.ForeignKey(
+        Subscription, on_delete=models.PROTECT, related_name="payments", null=True, blank=True
+    )
+    scheduled_for = models.DateField(null=True, blank=True)
     cancel_requested_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-created_at"]
-        constraints = [models.CheckConstraint(condition=Q(amount__gt=0), name="payment_positive")]
+        constraints = [
+            models.CheckConstraint(condition=Q(amount__gt=0), name="payment_positive"),
+            models.UniqueConstraint(
+                fields=["subscription", "scheduled_for"], name="unique_subscription_cycle"
+            ),
+            models.CheckConstraint(
+                condition=Q(subscription__isnull=True, scheduled_for__isnull=True)
+                | Q(subscription__isnull=False, scheduled_for__isnull=False),
+                name="payment_subscription_schedule",
+            ),
+        ]
         verbose_name = "pago"
 
     def __str__(self):
@@ -127,6 +179,7 @@ class Attempt(models.Model):
         CANCELLED = "cancelled", "Cancelado"
         PARTIALLY_REFUNDED = "partially_refunded", "Parcialmente devuelto"
         REFUNDED = "refunded", "Devuelto"
+        DISPUTED = "disputed", "En disputa"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     payment = models.ForeignKey(Payment, on_delete=models.PROTECT, related_name="attempts")
@@ -139,12 +192,14 @@ class Attempt(models.Model):
     closed_confirmed = models.BooleanField("Checkout no cobrable confirmado", default=False)
     sumup_id = models.CharField(max_length=128, unique=True, null=True, blank=True)
     checkout_url = models.URLField(max_length=2048, blank=True)
-    transaction_id = models.CharField(max_length=128, blank=True)
+    transaction_id = models.CharField(max_length=128, blank=True, db_index=True)
     transaction_code = models.CharField(max_length=128, blank=True)
+    create_submitted_at = models.DateTimeField(null=True, blank=True)
     process_submitted_at = models.DateTimeField(null=True, blank=True)
     action_required = models.BooleanField(default=False)
     paid_at = models.DateTimeField(null=True, blank=True)
     refunded_amount = models.DecimalField(max_digits=11, decimal_places=2, default=Decimal("0"))
+    dispute_detected_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField()
     last_checked_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=250, blank=True)
@@ -179,6 +234,11 @@ class RefundEvent(models.Model):
         verbose_name_plural = "eventos de devolución"
 
 
+class VerifiedTransaction(models.Model):
+    transaction_id = models.CharField(max_length=128, primary_key=True)
+    checkout_id = models.CharField(max_length=128, unique=True)
+
+
 class Notification(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     attempt = models.ForeignKey(Attempt, on_delete=models.PROTECT, related_name="notifications")
@@ -204,11 +264,17 @@ class ReconciliationRun(models.Model):
     success = models.BooleanField(default=False)
     checked = models.PositiveIntegerField(default=0)
     errors = models.PositiveIntegerField(default=0)
+    last_attempt_id = models.UUIDField(null=True)
 
     class Meta:
         ordering = ["-started_at"]
         verbose_name = "conciliación"
         verbose_name_plural = "conciliaciones"
+
+
+class WorkerHeartbeat(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1)
+    checked_at = models.DateTimeField()
 
 
 class AuditLog(models.Model):

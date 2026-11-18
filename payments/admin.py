@@ -12,6 +12,8 @@ from .models import (
     Payment,
     ReconciliationRun,
     RefundEvent,
+    SavedCard,
+    Subscription,
 )
 from .services import audit, cancel_attempt
 
@@ -48,6 +50,28 @@ class PaymentAdmin(ReadOnlyAdmin):
     list_display = ("reference", "amount", "currency", "merchant_code", "created_at")
     search_fields = ("=reference", "=id", "attempts__sumup_id", "attempts__transaction_id")
     inlines = [AttemptInline]
+
+
+@admin.register(Subscription)
+class SubscriptionAdmin(ReadOnlyAdmin):
+    list_display = ("reference", "status", "next_due_on", "blocked_reason", "cancelled_at")
+    list_filter = ("status",)
+    search_fields = ("=reference", "=id", "payments__reference")
+
+
+@admin.register(SavedCard)
+class SavedCardAdmin(ReadOnlyAdmin):
+    list_display = ("reference", "merchant_code", "status", "uncertain", "sandbox", "checked_at")
+    list_filter = ("status", "uncertain", "sandbox")
+    search_fields = ("=reference", "=id", "=setup_checkout_id", "=setup_transaction_id")
+    exclude = ("token_ciphertext",)
+
+    def get_readonly_fields(self, request, obj=None):
+        return [
+            field
+            for field in super().get_readonly_fields(request, obj)
+            if field not in self.exclude
+        ]
 
 
 @admin.register(Attempt)

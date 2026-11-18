@@ -61,9 +61,16 @@ Cada intento incluye su instantánea financiera, estado, `uncertain`, `closed_co
 
 Devuelven el pago con todos sus intentos y eventos de devolución, sin `requested_attempt`. La consulta no llama a SumUp: muestra la última comprobación persistida. El worker y las acciones del administrador actualizan esa información.
 
-Estados: `pending`, `paid`, `failed`, `expired`, `cancelled`, `partially_refunded`, `refunded`. `uncertain=true` conserva el estado previo pero impide tratarlo como una confirmación nueva.
+Estados: `pending`, `paid`, `failed`, `expired`, `cancelled`, `partially_refunded`, `refunded`, `disputed`. `uncertain=true` conserva el estado previo pero impide tratarlo como una confirmación nueva.
 
 Antes de entregar el producto, el servidor del SaaS debe comparar la referencia, importe, moneda y `merchant_code` con su pedido original; exigir un cobro confirmado sin incertidumbre y procesar la entrega una sola vez en su propia transacción. Un estado de devolución requiere aplicar la política comercial correspondiente. Nunca uses parámetros del retorno del navegador como prueba del cobro.
+
+## Suscripciones y operación
+
+Consulta [el calendario y el historial de suscripciones](RECURRING.md#scheduled-subscriptions)
+para crear y cancelar renovaciones. Los pagos programados incluyen `subscription_id` y
+`scheduled_for`. El estado autenticado del worker y sus colas se consulta en
+`GET /api/v1/operations/status/`.
 
 ## Errores
 
@@ -95,7 +102,7 @@ POST al destino configurado, con cuerpo JSON:
 }
 ```
 
-El objeto `payment` es una instantánea completa de la consulta. Incluye también cambios a pendiente, incertidumbre y eventos de devolución. El cuerpo y el ID permanecen estables en cada reintento. El destino queda fijado al crear el evento; cambiar la configuración afecta a eventos nuevos.
+El objeto `payment` es una instantánea completa de la consulta. Incluye también cambios a pendiente, incertidumbre, devoluciones y disputas. El cuerpo y el ID permanecen estables en cada reintento. El destino queda fijado al crear el evento; cambiar la configuración afecta a eventos nuevos.
 
 Cabeceras:
 

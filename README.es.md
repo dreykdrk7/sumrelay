@@ -6,7 +6,8 @@
 
 SumRelay conecta tu backend con SumUp: crea checkouts alojados, verifica el cobro
 con el proveedor y envía notificaciones firmadas a tu aplicación. Tu aplicación
-mantiene el catálogo, precios, impuestos, suscripciones y permisos de acceso.
+mantiene el catálogo, los precios, los impuestos y los permisos de acceso. SumRelay
+ejecuta el calendario de cobros periódicos.
 
 Cada instalación conecta **una aplicación con un comercio de SumUp**. Utiliza
 Django, PostgreSQL, el SDK oficial de SumUp y Docker Compose. Incluye un cliente
@@ -18,8 +19,8 @@ Python de servidor y un contrato OpenAPI para integrar otros lenguajes.
 - Verificación del checkout y la transacción antes de confirmar el cobro.
 - Estados inciertos explícitos para bloquear reintentos que podrían duplicar un cargo.
 - Notificaciones HMAC con cola persistente y reintentos durante 24 horas.
-- Conciliación periódica y detección de devoluciones totales y parciales.
-- Alta consentida de tarjetas, tokens cifrados y API de cargos recurrentes.
+- Conciliación periódica y detección de devoluciones y disputas reportadas por SumUp.
+- Alta consentida de tarjetas, tokens cifrados y suscripciones con trazabilidad por vencimiento.
 - Panel administrativo con auditoría, cancelación y reintentos de notificaciones.
 - Sandbox local, pruebas automatizadas y despliegue con Docker.
 
@@ -84,9 +85,9 @@ Es un proyecto comunitario inicial. Las pruebas automatizadas usan datos
 sintéticos y no certifican cada comercio o método de pago. Valida tu instalación
 en sandbox antes de mover fondos reales.
 
-La entrega de eventos puede repetirse o llegar fuera de orden. Las suscripciones,
-facturas, impuestos y consentimiento los gestiona tu aplicación. SumRelay detecta
-devoluciones, pero no las inicia; `/health/` tampoco certifica el estado del worker.
+La entrega de eventos puede repetirse o llegar fuera de orden. Tu aplicación
+gestiona facturas, impuestos, consentimiento y acceso. SumRelay detecta devoluciones
+iniciadas en SumUp. El estado autenticado del worker está en `/api/v1/operations/status/`.
 
 ```sh
 python3.12 -m venv .venv

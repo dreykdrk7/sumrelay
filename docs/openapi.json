@@ -2,7 +2,7 @@
   "openapi": "3.1.1",
   "info": {
     "title": "SumRelay API",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Una instalación por SaaS y comercio. API exclusiva de servidor. Importes decimales como cadenas. El retorno del navegador no confirma un pago.",
     "license": {
       "name": "MIT",
@@ -736,6 +736,263 @@
           }
         }
       }
+    },
+    "/api/v1/subscriptions/": {
+      "post": {
+        "operationId": "createSubscription",
+        "summary": "Programar cobros periódicos",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSubscription"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Suscripción existente con los mismos datos.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            },
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Suscripción creada.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            },
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Solicitud rechazada.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "getSubscriptionByReference",
+        "parameters": [
+          {
+            "name": "reference",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suscripción con la referencia indicada.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Solicitud rechazada.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/subscriptions/{subscription_id}/": {
+      "get": {
+        "operationId": "getSubscription",
+        "parameters": [
+          {
+            "name": "subscription_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Estado de la suscripción.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Solicitud rechazada.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/subscriptions/{subscription_id}/payments/": {
+      "get": {
+        "operationId": "listSubscriptionPayments",
+        "parameters": [
+          {
+            "name": "subscription_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Fecha de corte exclusiva del historial."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Página de hasta 25 cobros.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionPayments"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Solicitud rechazada.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/subscriptions/{subscription_id}/cancel/": {
+      "post": {
+        "operationId": "cancelSubscription",
+        "parameters": [
+          {
+            "name": "subscription_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancelación registrada.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Solicitud rechazada.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/operations/status/": {
+      "get": {
+        "operationId": "getOperationsStatus",
+        "responses": {
+          "200": {
+            "description": "El worker ha completado un ciclo recientemente.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationsStatus"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Heartbeat del worker ausente o antiguo.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationsStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Solicitud rechazada.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "webhooks": {
@@ -820,7 +1077,8 @@
           "expired",
           "cancelled",
           "partially_refunded",
-          "refunded"
+          "refunded",
+          "disputed"
         ]
       },
       "CreatePayment": {
@@ -1005,6 +1263,10 @@
           },
           "action_required": {
             "type": "boolean"
+          },
+          "dispute_detected_at": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": [
@@ -1089,6 +1351,14 @@
           },
           "cancel_requested": {
             "type": "boolean"
+          },
+          "subscription_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scheduled_for": {
+            "type": "string",
+            "format": "date"
           }
         },
         "required": [
@@ -1228,6 +1498,14 @@
           },
           "requested_attempt": {
             "$ref": "#/components/schemas/Attempt"
+          },
+          "subscription_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scheduled_for": {
+            "type": "string",
+            "format": "date"
           }
         },
         "required": [
@@ -1398,8 +1676,298 @@
               "null"
             ],
             "format": "date-time"
+          },
+          "setup_transaction_id": {
+            "type": "string"
           }
         }
+      },
+      "CreateSubscription": {
+        "type": "object",
+        "required": [
+          "reference",
+          "amount",
+          "currency",
+          "description",
+          "return_url",
+          "saved_card_id",
+          "starts_on",
+          "interval_months"
+        ],
+        "properties": {
+          "reference": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "amount": {
+            "type": "string",
+            "pattern": "^[0-9]+(?:\\.[0-9]{1,2})?$",
+            "description": "Positivo, máximo 999999999.99. CLP exige un entero sin decimales.",
+            "examples": [
+              "19.95"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "BRL",
+              "CHF",
+              "CLP",
+              "COP",
+              "CZK",
+              "DKK",
+              "EUR",
+              "GBP",
+              "HUF",
+              "NOK",
+              "PLN",
+              "RON",
+              "SEK",
+              "USD"
+            ],
+            "description": "Debe estar habilitada en la instalación y aceptada por el comercio."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "return_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "Coincidencia exacta con un retorno permitido."
+          },
+          "saved_card_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "starts_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "interval_months": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 12
+          }
+        },
+        "additionalProperties": false
+      },
+      "Subscription": {
+        "type": "object",
+        "required": [
+          "id",
+          "reference",
+          "amount",
+          "currency",
+          "description",
+          "return_url",
+          "saved_card_id",
+          "starts_on",
+          "interval_months",
+          "merchant_code",
+          "next_due_on",
+          "status",
+          "blocked_reason",
+          "latest_payment_id",
+          "created_at",
+          "cancelled_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reference": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "amount": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "BRL",
+              "CHF",
+              "CLP",
+              "COP",
+              "CZK",
+              "DKK",
+              "EUR",
+              "GBP",
+              "HUF",
+              "NOK",
+              "PLN",
+              "RON",
+              "SEK",
+              "USD"
+            ],
+            "description": "Debe estar habilitada en la instalación y aceptada por el comercio."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "return_url": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048,
+            "description": "Coincidencia exacta con un retorno permitido."
+          },
+          "saved_card_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "starts_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "interval_months": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 12
+          },
+          "merchant_code": {
+            "type": "string"
+          },
+          "next_due_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "blocked",
+              "cancelled"
+            ]
+          },
+          "blocked_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "latest_payment_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cancelled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SubscriptionPayments": {
+        "type": "object",
+        "required": [
+          "id",
+          "payments",
+          "next_before"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payments": {
+            "type": "array",
+            "maxItems": 25,
+            "items": {
+              "$ref": "#/components/schemas/Payment"
+            }
+          },
+          "next_before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperationsStatus": {
+        "type": "object",
+        "required": [
+          "status",
+          "worker_checked_at",
+          "last_reconciliation_started_at",
+          "last_reconciliation_finished_at",
+          "last_successful_reconciliation_at",
+          "uncertain_attempts",
+          "exhausted_notifications",
+          "blocked_subscriptions"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "worker_stale"
+            ]
+          },
+          "worker_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_reconciliation_started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_reconciliation_finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_successful_reconciliation_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "uncertain_attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "exhausted_notifications": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "blocked_subscriptions": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       }
     }
   }

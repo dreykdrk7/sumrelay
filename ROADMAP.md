@@ -6,14 +6,14 @@ This is a direction for contributions, not a delivery schedule.
 
 - Hosted checkouts, persistent idempotency, and provider-verified states.
 - Signed notifications, retries, reconciliation, and refund detection.
-- Saved-card setup and recurring charge primitives.
+- Saved-card setup and scheduled recurring payments with a record per collection.
 - Docker deployment, local sandbox, admin tools, and a Python backend client.
 
 ## Useful next steps
 
 - Full English localization of the admin panel, errors, and OpenAPI descriptions.
 - More backend examples and clients for TypeScript, PHP, and other ecosystems.
-- A worker heartbeat, structured metrics, and clearer queue visibility.
+- Structured metrics and more granular queue visibility.
 - Reproducible sandbox integration checks across supported merchant capabilities.
 - Documented release/versioning and upgrade compatibility policies.
 - A deployment-independent encrypted backup and restore helper.
@@ -23,6 +23,6 @@ Bring proposals to [Issues](https://github.com/dreykdrk7/sumrelay/issues).
 Payment correctness, understandable integration, and operational recovery take
 priority over adding payment methods or expanding the service boundary.
 
-Multi-merchant routing, subscription scheduling, invoicing, and starting refunds
+Multi-merchant routing, invoicing, and starting refunds
 are outside the current scope. Proposals should explain the API and recovery
 implications before introducing them.

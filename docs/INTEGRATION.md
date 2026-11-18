@@ -108,5 +108,5 @@ Any backend can use the [HTTP API](API.md) and [OpenAPI contract](openapi.json).
 HMAC signatures use SHA-256 over `timestamp + "." + raw_body`; compare in constant
 time and enforce a timestamp tolerance as well as persistent event deduplication.
 
-See [recurring payments](RECURRING.md) for saved cards. Your application schedules
-each renewal and owns consent, cancellation UI, pricing, and entitlement periods.
+See [recurring payments](RECURRING.md) for saved cards and scheduled subscriptions.
+Your application owns consent, cancellation UI, pricing and entitlement periods.

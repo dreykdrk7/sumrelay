@@ -7,11 +7,21 @@ from datetime import timedelta
 import httpx
 from django.conf import settings
 from django.db import connection, transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
-from .models import Attempt, IntegrationConfig, Notification, ReconciliationRun
-from .services import installation_config, refresh_attempt
+from .cards import process_recurring
+from .gateway import SumUpGateway
+from .models import (
+    Attempt,
+    IntegrationConfig,
+    Notification,
+    ReconciliationRun,
+    Subscription,
+    WorkerHeartbeat,
+)
+from .services import _create_checkout, installation_config, refresh_attempt
+from .subscriptions import evaluate_subscription
 
 
 @contextmanager
@@ -86,19 +96,21 @@ def deliver_notification(notification_id, client=None):
         notification.save()
 
 
-def reconcile(gateway=None):
-    run = ReconciliationRun.objects.create()
-    # V1 deliberately scans known checkouts, avoiding unvalidated changes_since semantics.
-    for attempt_id in (
-        Attempt.objects.order_by("created_at").values_list("id", flat=True).iterator()
-    ):
+def reconcile(gateway, run, *, limit):
+    attempts = Attempt.objects.filter(created_at__lte=run.started_at).order_by("pk")
+    if run.last_attempt_id:
+        attempts = attempts.filter(pk__gt=run.last_attempt_id)
+    batch = list(attempts.values_list("id", flat=True)[:limit])
+    for attempt_id in batch:
         attempt = refresh_attempt(attempt_id, gateway)
         run.checked += 1
         run.errors += int(attempt.uncertain)
-    run.finished_at = timezone.now()
-    run.success = run.errors == 0
-    run.save()
-    return run
+        run.last_attempt_id = attempt_id
+        run.save(update_fields=["checked", "errors", "last_attempt_id"])
+    if len(batch) < limit:
+        run.finished_at = timezone.now()
+        run.success = run.errors == 0
+        run.save(update_fields=["finished_at", "success"])
 
 
 def worker_tick(gateway=None, client=None):
@@ -106,47 +118,82 @@ def worker_tick(gateway=None, client=None):
         if not acquired:
             return
         config = installation_config()
-        latest = ReconciliationRun.objects.order_by("-started_at").first()
-        now = timezone.now()
-        if (
-            config.reconcile_requested
-            or latest is None
-            or latest.started_at <= now - timedelta(seconds=config.reconciliation_seconds)
-        ):
-            # Clear before starting so an admin request during the run is preserved.
-            IntegrationConfig.objects.filter(pk=1).update(reconcile_requested=False)
-            reconcile(gateway)
+        if gateway is None:
+            with SumUpGateway() as provider:
+                run_work(config, provider, client)
         else:
-            due = Attempt.objects.filter(
-                Q(check_requested_at__isnull=False)
-                | (
-                    Q(paid_at__isnull=True, closed_confirmed=False)
-                    & (
-                        Q(last_checked_at__isnull=True)
-                        | Q(
-                            last_checked_at__lte=now
-                            - timedelta(seconds=settings.PENDING_POLL_SECONDS)
-                        )
-                    )
-                )
-            ).values_list("id", flat=True)
-            for attempt_id in due.iterator():
-                refresh_attempt(attempt_id, gateway)
-        pending = Notification.objects.filter(
-            delivered_at__isnull=True,
-            exhausted=False,
-            next_attempt_at__lte=timezone.now(),
-        ).values_list("id", flat=True)
-        for notification_id in pending.iterator():
-            deliver_notification(notification_id, client)
-        from .cards import process_recurring
+            run_work(config, gateway, client)
+        WorkerHeartbeat.objects.update_or_create(pk=1, defaults={"checked_at": timezone.now()})
 
+
+def run_work(config, gateway, client):
+    now = timezone.now()
+    if settings.PAYMENT_CREATION_ENABLED and settings.RECURRING_CHARGES_ENABLED:
+        subscriptions = Subscription.objects.filter(
+            status=Subscription.Status.ACTIVE,
+            next_due_on__lte=timezone.localdate(now),
+            check_after__lte=now,
+        ).order_by("check_after", "id")
+        for subscription_id in list(subscriptions.values_list("id", flat=True)[:50]):
+            evaluate_subscription(subscription_id, config, now)
+
+    if settings.PAYMENT_CREATION_ENABLED and settings.SUMUP_API_KEY:
+        unsent = Attempt.objects.filter(
+            create_submitted_at__isnull=True,
+            sumup_id__isnull=True,
+            closed_confirmed=False,
+            payment__merchant_code=settings.SUMUP_MERCHANT_CODE,
+        ).select_related("payment")
+        if not settings.RECURRING_CHARGES_ENABLED:
+            unsent = unsent.filter(payment__saved_card__isnull=True)
+        for attempt in list(unsent[:3]):
+            _create_checkout(attempt, gateway)
+
+    due = Attempt.objects.filter(
+        Q(check_requested_at__isnull=False)
+        | (
+            Q(paid_at__isnull=True, closed_confirmed=False, create_submitted_at__isnull=False)
+            & (
+                Q(last_checked_at__isnull=True)
+                | Q(last_checked_at__lte=now - timedelta(seconds=settings.PENDING_POLL_SECONDS))
+            )
+        )
+    ).order_by(F("last_checked_at").asc(nulls_first=True), "created_at")
+    for attempt_id in list(due.values_list("id", flat=True)[:5]):
+        refresh_attempt(attempt_id, gateway)
+
+    latest = ReconciliationRun.objects.first()
+    if latest is None or (
+        latest.finished_at
+        and (
+            config.reconcile_requested
+            or latest.finished_at <= now - timedelta(seconds=config.reconciliation_seconds)
+        )
+    ):
+        # Clear before starting so an admin request during the run is preserved.
+        IntegrationConfig.objects.filter(pk=1).update(reconcile_requested=False)
+        latest = ReconciliationRun.objects.create()
+    if latest.finished_at is None:
+        reconcile(gateway, latest, limit=5)
+
+    if settings.PAYMENT_CREATION_ENABLED and settings.RECURRING_CHARGES_ENABLED:
         ready = Attempt.objects.filter(
             payment__saved_card__isnull=False,
+            payment__saved_card__status="ready",
+            payment__saved_card__uncertain=False,
+            payment__cancel_requested_at__isnull=True,
+            payment__merchant_code=settings.SUMUP_MERCHANT_CODE,
             process_submitted_at__isnull=True,
             uncertain=False,
             status=Attempt.Status.PENDING,
             sumup_id__isnull=False,
-        ).values_list("id", flat=True)
-        for attempt_id in ready.iterator():
+            expires_at__gt=timezone.now(),
+        )
+        for attempt_id in list(ready.values_list("id", flat=True)[:3]):
             process_recurring(attempt_id, gateway)
+
+    pending = Notification.objects.filter(
+        delivered_at__isnull=True, exhausted=False, next_attempt_at__lte=timezone.now()
+    ).order_by("next_attempt_at", "created_at")
+    for notification_id in list(pending.values_list("id", flat=True)[:10]):
+        deliver_notification(notification_id, client)
