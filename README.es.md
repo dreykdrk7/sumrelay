@@ -24,6 +24,16 @@ Python de servidor y un contrato OpenAPI para integrar otros lenguajes.
 - Panel administrativo con auditoría, cancelación y reintentos de notificaciones.
 - Sandbox local, pruebas automatizadas y despliegue con Docker.
 
+## Estado y mantenimiento
+
+[v1.1.0](https://github.com/dreykdrk7/sumrelay/releases/tag/v1.1.0) está publicada
+y pasa a mantenimiento. El alcance queda congelado: se priorizan errores de
+cobro, seguridad y compatibilidad con el proveedor sobre funciones nuevas.
+El piloto de Eventora verificó tokenización, un cobro recurrente, deduplicación
+de eventos firmados, devolución total y cancelación con SumUp sandbox real.
+Cada instalación necesita sus propias copias y alertas operativas.
+Consulta la [política de mantenimiento](docs/MAINTENANCE.md).
+
 ## Arranque rápido
 
 Necesitas Git, Python 3.10+ para generar la configuración, Docker con Compose v2
