@@ -39,6 +39,16 @@ flowchart LR
 The browser return is for navigation. Your backend fulfills an order only after
 checking a verified payment against its own order and recording fulfillment once.
 
+## Status and maintenance
+
+[v1.1.0](https://github.com/dreykdrk7/sumrelay/releases/tag/v1.1.0) is released
+and in maintenance. The scope is frozen: fixes for payment correctness,
+security and provider compatibility take priority over new features.
+The Eventora pilot verified tokenization, a recurring collection, signed-event
+deduplication, a full refund and cancellation against real SumUp sandbox.
+Each installation still needs its own backups and operational alerts.
+See the [maintenance policy](docs/MAINTENANCE.md).
+
 ## Quick start
 
 You need Git, Python 3.10+ for the configuration helper, Docker Engine with
