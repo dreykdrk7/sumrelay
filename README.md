@@ -9,8 +9,8 @@
 
 SumRelay is a small payment service that sits between your backend and SumUp.
 Create a hosted checkout, verify the result with SumUp, and receive signed
-notifications in your own application. Keep your products, pricing, subscriptions,
-and access rules in your app; let SumRelay handle the payment lifecycle.
+notifications in your own application. SumRelay also runs recurring payment
+schedules. Your application owns the plan, prices, taxes and access rules.
 
 One installation connects **one application to one SumUp merchant**. It runs on
 Django, PostgreSQL, the official SumUp Python SDK, and Docker Compose. The API is
@@ -22,8 +22,8 @@ language independent; a Python backend client is included.
 - Verification of checkout, transaction, amount, currency, and merchant before confirming payment.
 - Explicit uncertain states: a timeout cannot silently become a second charge.
 - Signed HMAC webhooks, a durable delivery queue, and retries for up to 24 hours.
-- Periodic reconciliation and detection of full and partial refunds made in SumUp.
-- Consented saved-card setup, encrypted payment tokens, and recurring charge endpoints.
+- Periodic reconciliation and detection of refunds and chargebacks reported by SumUp.
+- Consented saved-card setup, encrypted tokens and scheduled collections with a trace per cycle.
 - A Django admin panel for investigation, cancellation, reconciliation, and delivery retries.
 - An isolated localhost sandbox, OpenAPI contract, tests, and Docker deployment files.
 
@@ -120,13 +120,13 @@ SDK boundary with synthetic data; they do not certify your merchant configuratio
 or every payment method. Validate your installation in sandbox before using live funds.
 
 - The service is a single-merchant backend, with shared server credentials per installation.
-- Your app owns subscription schedules, invoices, taxes, consent, and customer access.
+- Your app owns invoices, taxes, consent, and customer access.
 - Recurring charges require SumUp tokenization support and customer authorization;
   authentication challenges need your app to involve the customer. [Recurring API](docs/RECURRING.md).
 - Notifications are delivered at least once and may arrive out of order. Deduplicate durably.
 - Refunds are detected; initiating refunds is outside the current API.
 - Reconciliation visits known checkouts; it does not discover orders lost after restoring an old backup.
-- `/health/` checks the database connection. Monitor worker activity and the delivery queue separately.
+- `/health/` checks the database connection. Use `/api/v1/operations/status/` for worker activity.
 
 ## Development and community
 

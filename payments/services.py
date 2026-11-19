@@ -16,9 +16,13 @@ from .models import (
     Notification,
     Payment,
     RefundEvent,
+    SavedCard,
+    VerifiedTransaction,
 )
 from .serializers import serialize_payment
 from .validation import PaymentError, validate_request
+
+SUBSCRIPTION_REFERENCE_PREFIX = "sumrelay-subscription:"
 
 
 def installation_config():
@@ -48,6 +52,8 @@ def state_signature(attempt):
         attempt.sumup_id,
         attempt.checkout_url,
         attempt.transaction_id,
+        attempt.transaction_code,
+        attempt.action_required,
         attempt.refunded_amount,
         tuple(
             attempt.refund_events.order_by("provider_id").values_list(
@@ -113,7 +119,7 @@ def _validate_identity(data, attempt, *, checkout=True):
         raise ProviderError("Discrepancia de identidad, importe, moneda o comercio en SumUp.")
 
 
-def _refunds(data, attempt):
+def _refunds(data, attempt, *, disputed=False):
     events = {}
     for event in (data.get("events") or []) + (data.get("transaction_events") or []):
         if (event.get("type") or event.get("event_type")) != "REFUND":
@@ -127,10 +133,14 @@ def _refunds(data, attempt):
         except InvalidOperation:
             raise ProviderError("Evento de devolución incompleto o inválido.") from None
         event_id = str(event["id"])
+        try:
+            occurred_at = parse_datetime(event.get("timestamp") or "")
+        except (TypeError, ValueError):
+            raise ProviderError("Fecha inválida en un evento de devolución.") from None
         record = {
             "amount": amount,
             "status": event.get("status") or "UNKNOWN",
-            "occurred_at": parse_datetime(event.get("timestamp") or ""),
+            "occurred_at": occurred_at,
         }
         if event_id in events and events[event_id] != record:
             raise ProviderError("Datos contradictorios en un evento de devolución.")
@@ -138,16 +148,64 @@ def _refunds(data, attempt):
     combined = {
         e.provider_id: {"amount": e.amount, "status": e.status} for e in attempt.refund_events.all()
     }
+    confirmed_states = {"REFUNDED", "SUCCESSFUL"}
+    for event_id, record in events.items():
+        previous = combined.get(event_id)
+        if (
+            previous
+            and previous["status"] in confirmed_states
+            and (previous["amount"] != record["amount"] or record["status"] not in confirmed_states)
+        ):
+            raise ProviderError("Un evento de devolución confirmado ha cambiado.")
     combined.update(events)
     total = sum(
-        (e["amount"] for e in combined.values() if e["status"] in {"REFUNDED", "SUCCESSFUL"}),
+        (e["amount"] for e in combined.values() if e["status"] in confirmed_states),
         Decimal("0"),
     )
     if total > attempt.payment.amount or total < attempt.refunded_amount:
         raise ProviderError("Total de devoluciones inconsistente con el registro anterior.")
-    if data.get("status") == "REFUNDED" and total == 0:
+    if data.get("status") == "REFUNDED" and total == 0 and not disputed:
         raise ProviderError("Devolución indicada sin eventos confirmados suficientes.")
     return events, total
+
+
+def bind_transaction(checkout_id, transaction_id):
+    if (
+        Attempt.objects.filter(transaction_id=transaction_id).exclude(sumup_id=checkout_id).exists()
+        or SavedCard.objects.filter(setup_transaction_id=transaction_id)
+        .exclude(setup_checkout_id=checkout_id)
+        .exists()
+    ):
+        raise ProviderError("La transacción ya pertenece a otro checkout.")
+    try:
+        binding, _ = VerifiedTransaction.objects.get_or_create(
+            transaction_id=transaction_id, defaults={"checkout_id": checkout_id}
+        )
+    except IntegrityError:
+        raise ProviderError("El checkout ya tiene otra transacción verificada.") from None
+    if binding.checkout_id != checkout_id:
+        raise ProviderError("La transacción ya pertenece a otro checkout.")
+
+
+def checkout_transaction_id(data):
+    candidates = {
+        row["id"]
+        for row in data.get("transactions") or []
+        if row.get("status") in {"SUCCESSFUL", "REFUNDED"} and row.get("id")
+    }
+    if data.get("transaction_id"):
+        candidates.add(data["transaction_id"])
+    if len(candidates) != 1:
+        raise ProviderError("El checkout pagado no identifica una única transacción.")
+    return candidates.pop()
+
+
+def _has_dispute(detail):
+    return detail.get("simple_status") in {"CHARGEBACK", "NON_COLLECTION"} or any(
+        (event.get("event_type") or event.get("type")) == "CHARGE_BACK"
+        and event.get("status") != "FAILED"
+        for event in (detail.get("events") or []) + (detail.get("transaction_events") or [])
+    )
 
 
 def _apply_checkout(attempt, data, gateway, *, cancelling=False):
@@ -158,25 +216,20 @@ def _apply_checkout(attempt, data, gateway, *, cancelling=False):
     )
     status = data.get("status")
     if status == "PAID":
-        candidates = [
-            t
-            for t in data.get("transactions") or []
-            if t.get("status") in {"SUCCESSFUL", "REFUNDED"} and t.get("id")
-        ]
-        if len(candidates) > 1:
-            raise ProviderError("Hay varias transacciones cobradas para el mismo checkout.")
-        tx_id = data.get("transaction_id") or (candidates[0]["id"] if candidates else None)
-        if not tx_id:
-            raise ProviderError("Checkout pagado sin transacción verificable.")
+        tx_id = checkout_transaction_id(data)
         detail = gateway.transaction(attempt.payment.merchant_code, tx_id)
         _validate_identity(detail, attempt, checkout=False)
-        if detail.get("id") != tx_id or detail.get("status") not in {"SUCCESSFUL", "REFUNDED"}:
+        disputed = _has_dispute(detail)
+        if detail.get("id") != tx_id or (
+            detail.get("status") not in {"SUCCESSFUL", "REFUNDED"} and not disputed
+        ):
             raise ProviderError("Resultado de la transacción todavía no verificable.")
         if attempt.payment.saved_card_id and detail.get("payment_type") != "RECURRING":
             raise ProviderError("El cargo no confirma el instrumento recurrente esperado.")
         if attempt.transaction_id and attempt.transaction_id != tx_id:
             raise ProviderError("La transacción confirmada ha cambiado.")
-        events, total = _refunds(detail, attempt)
+        events, total = _refunds(detail, attempt, disputed=disputed)
+        bind_transaction(attempt.sumup_id, tx_id)
         for event_id, record in events.items():
             RefundEvent.objects.update_or_create(
                 attempt=attempt,
@@ -187,8 +240,12 @@ def _apply_checkout(attempt, data, gateway, *, cancelling=False):
         attempt.transaction_code = detail.get("transaction_code") or ""
         attempt.paid_at = attempt.paid_at or timezone.now()
         attempt.refunded_amount = total
+        if disputed and not attempt.dispute_detected_at:
+            attempt.dispute_detected_at = timezone.now()
         attempt.status = (
-            Attempt.Status.REFUNDED
+            Attempt.Status.DISPUTED
+            if attempt.dispute_detected_at
+            else Attempt.Status.REFUNDED
             if total == attempt.payment.amount
             else Attempt.Status.PARTIALLY_REFUNDED
             if total
@@ -214,15 +271,19 @@ def _apply_checkout(attempt, data, gateway, *, cancelling=False):
             raise ProviderError("La desactivación aún no está confirmada por SumUp.")
     else:
         raise ProviderError("Estado de checkout desconocido; requiere comprobación.")
+    if attempt.closed_confirmed:
+        attempt.action_required = False
     attempt.uncertain = False
     attempt.last_error = ""
     attempt.last_checked_at = timezone.now()
 
 
-def refresh_attempt(attempt_id, gateway=None, *, cancelling=False):
+def refresh_attempt(attempt_id, gateway=None, *, cancelling=False, action_required=None):
     if gateway is None:
         with SumUpGateway() as provider:
-            return refresh_attempt(attempt_id, provider, cancelling=cancelling)
+            return refresh_attempt(
+                attempt_id, provider, cancelling=cancelling, action_required=action_required
+            )
     payment_id = Attempt.objects.values_list("payment_id", flat=True).get(pk=attempt_id)
     with transaction.atomic():
         # All state transitions for an order share this lock, including API and admin actions.
@@ -230,28 +291,56 @@ def refresh_attempt(attempt_id, gateway=None, *, cancelling=False):
         attempt = Attempt.objects.select_related("payment").get(pk=attempt_id)
         before = state_signature(attempt)
         requested_at = attempt.check_requested_at
+        if action_required is not None and not attempt.closed_confirmed:
+            attempt.action_required = action_required
         try:
             if attempt.sumup_id:
                 data = gateway.get(attempt.sumup_id)
             elif attempt.closed_confirmed and attempt.status in {
                 Attempt.Status.FAILED,
                 Attempt.Status.CANCELLED,
+                Attempt.Status.EXPIRED,
             }:
                 # A rejected creation has no provider resource to look up.
                 data = None
-            else:
+            elif attempt.create_submitted_at:
                 # Recover a lost create response by our stable reference; never POST again.
                 matches = gateway.find(str(attempt.id))
                 if len(matches) != 1:
                     raise ProviderError("Creación sin resolver: no se encontró un único checkout.")
                 data = matches[0]
+            else:
+                data = None
+                if attempt.payment.cancel_requested_at:
+                    _close_unsubmitted(attempt, Attempt.Status.CANCELLED)
             if data is not None:
-                _apply_checkout(attempt, data, gateway, cancelling=cancelling)
-                if attempt.payment.saved_card_id and attempt.status == Attempt.Status.FAILED:
+                cancel_requested = bool(attempt.payment.cancel_requested_at)
+                _apply_checkout(
+                    attempt,
+                    data,
+                    gateway,
+                    cancelling=cancelling or (cancel_requested and data.get("status") == "EXPIRED"),
+                )
+                if not attempt.closed_confirmed and (
+                    cancel_requested
+                    or (
+                        attempt.payment.saved_card_id
+                        and (
+                            attempt.status == Attempt.Status.FAILED
+                            or attempt.expires_at <= timezone.now()
+                        )
+                    )
+                ):
                     gateway.deactivate(attempt.sumup_id)
                     _apply_checkout(
                         attempt, gateway.get(attempt.sumup_id), gateway, cancelling=True
                     )
+                if (
+                    attempt.status == Attempt.Status.PENDING
+                    and attempt.process_submitted_at
+                    and not attempt.action_required
+                ):
+                    _mark_error(attempt, "El envío del cargo sigue pendiente de confirmación.")
         except ProviderError as exc:
             _mark_error(attempt, str(exc))
         _save_attempt(attempt)
@@ -270,6 +359,10 @@ def create_payment(data, key, gateway=None, *, saved_card_id=None):
     require_creation(recurring=saved_card_id is not None)
     config = installation_config()
     normalized, amount, digest = validate_request(data, key, config)
+    if normalized["reference"].startswith(SUBSCRIPTION_REFERENCE_PREFIX) or key.startswith(
+        SUBSCRIPTION_REFERENCE_PREFIX
+    ):
+        raise PaymentError("reserved_reference", "Referencia reservada para renovaciones.")
     card = None
     if saved_card_id is not None:
         import hashlib
@@ -337,15 +430,9 @@ def create_payment(data, key, gateway=None, *, saved_card_id=None):
                     )
             if payment.cancel_requested_at:
                 raise PaymentError("payment_cancelled", "Este pedido está cancelado.", 409)
-            attempt = Attempt.objects.create(
-                payment=payment,
-                idempotency_key=key,
-                request_hash=digest,
-                description=normalized["description"],
-                return_url=normalized["return_url"],
-                expires_at=timezone.now() + timedelta(seconds=config.checkout_ttl_seconds),
-                last_error="Creación pendiente de confirmar con SumUp.",
-            )
+            if payment.subscription_id:
+                raise PaymentError("reserved_reference", "Referencia reservada para renovaciones.")
+            attempt = reserve_attempt(payment, normalized, key, digest, config)
     except IntegrityError:
         # A concurrent order with another reference may claim the same global key.
         existing = Attempt.objects.filter(idempotency_key=key).first()
@@ -364,6 +451,26 @@ def create_payment(data, key, gateway=None, *, saved_card_id=None):
     return attempt, True
 
 
+def reserve_attempt(payment, data, key, digest, config):
+    return Attempt.objects.create(
+        payment=payment,
+        idempotency_key=key,
+        request_hash=digest,
+        description=data["description"],
+        return_url=data["return_url"],
+        expires_at=timezone.now() + timedelta(seconds=config.checkout_ttl_seconds),
+        last_error="Creación pendiente de confirmar con SumUp.",
+    )
+
+
+def _close_unsubmitted(attempt, status):
+    attempt.status = status
+    attempt.closed_confirmed = True
+    attempt.uncertain = False
+    attempt.last_error = "Checkout cerrado antes del envío a SumUp."
+    attempt.last_checked_at = timezone.now()
+
+
 def _create_checkout(attempt, gateway):
     from .controls import require_creation
 
@@ -371,11 +478,30 @@ def _create_checkout(attempt, gateway):
     with transaction.atomic():
         payment = Payment.objects.select_for_update().get(pk=attempt.payment_id)
         attempt.refresh_from_db()
-        if payment.cancel_requested_at:
-            attempt.status = Attempt.Status.CANCELLED
-            attempt.closed_confirmed = True
-            attempt.uncertain = False
-            attempt.last_error = "Creación cancelada antes del envío a SumUp."
+        if attempt.create_submitted_at or attempt.closed_confirmed or attempt.sumup_id:
+            return
+        if payment.subscription_id and not payment.cancel_requested_at:
+            attempt.expires_at = timezone.now() + timedelta(
+                seconds=installation_config().checkout_ttl_seconds
+            )
+        if payment.cancel_requested_at or attempt.expires_at <= timezone.now():
+            _close_unsubmitted(
+                attempt,
+                Attempt.Status.CANCELLED if payment.cancel_requested_at else Attempt.Status.EXPIRED,
+            )
+            _save_attempt(attempt)
+            enqueue_change(attempt)
+            return
+        attempt.create_submitted_at = timezone.now()
+        attempt.save(update_fields=["create_submitted_at", "expires_at"])
+    with transaction.atomic():
+        payment = Payment.objects.select_for_update().get(pk=attempt.payment_id)
+        attempt.refresh_from_db()
+        if payment.cancel_requested_at or attempt.expires_at <= timezone.now():
+            _close_unsubmitted(
+                attempt,
+                Attempt.Status.CANCELLED if payment.cancel_requested_at else Attempt.Status.EXPIRED,
+            )
             _save_attempt(attempt)
             enqueue_change(attempt)
             return
@@ -399,6 +525,29 @@ def _create_checkout(attempt, gateway):
         enqueue_change(attempt)
 
 
+def request_payment_cancellation(payment):
+    """Record the cancellation under the same lock used by provider submissions."""
+    with transaction.atomic():
+        payment = Payment.objects.select_for_update().get(pk=payment.pk)
+        if not payment.cancel_requested_at:
+            payment.cancel_requested_at = timezone.now()
+            payment.save(update_fields=["cancel_requested_at"])
+            audit(None, "payment_cancel_requested", payment.id, payment.reference)
+            latest = payment.attempts.last()
+            if latest:
+                if (
+                    not latest.create_submitted_at
+                    and not latest.sumup_id
+                    and not latest.closed_confirmed
+                ):
+                    _close_unsubmitted(latest, Attempt.Status.CANCELLED)
+                    _save_attempt(latest)
+                elif not latest.closed_confirmed:
+                    Attempt.objects.filter(pk=latest.pk).update(check_requested_at=timezone.now())
+                enqueue_change(latest)
+        return payment
+
+
 def cancel_attempt(attempt_id, actor, gateway=None):
     audit(actor, "cancel_requested", attempt_id, "Solicitud registrada")
     if gateway is None:
@@ -412,7 +561,7 @@ def cancel_attempt_with_gateway(attempt_id, actor, gateway):
     with transaction.atomic():
         Payment.objects.select_for_update().get(pk=payment_id)
         attempt = refresh_attempt(attempt_id, gateway)
-        if attempt.paid_at or attempt.closed_confirmed:
+        if attempt.paid_at or attempt.closed_confirmed or attempt.payment.cancel_requested_at:
             audit(actor, "cancel_result", attempt_id, f"Sin cancelación: {attempt.status}")
             return attempt
         if not attempt.sumup_id:

@@ -10,7 +10,15 @@ from django.utils import timezone
 
 from .gateway import ProviderError, ProviderRejected, SumUpGateway
 from .models import Attempt, SavedCard
-from .services import installation_config, refresh_attempt
+from .services import (
+    _mark_error,
+    _save_attempt,
+    bind_transaction,
+    checkout_transaction_id,
+    enqueue_change,
+    installation_config,
+    refresh_attempt,
+)
 from .validation import PaymentError, validate_request
 
 
@@ -26,6 +34,10 @@ def cipher():
 def token_for(card):
     if card.status != "ready" or card.uncertain or not card.token_ciphertext:
         raise ProviderError("La tarjeta guardada no está verificada.")
+    return _decrypt_token(card)
+
+
+def _decrypt_token(card):
     try:
         return cipher().decrypt(card.token_ciphertext.encode()).decode()
     except (InvalidToken, UnicodeError):
@@ -41,6 +53,9 @@ def serialize_card(card):
         "uncertain": card.uncertain,
         "sandbox": card.sandbox,
         "setup_checkout_id": card.setup_checkout_id,
+        **(
+            {"setup_transaction_id": card.setup_transaction_id} if card.setup_transaction_id else {}
+        ),
         "last4": card.last4 or None,
         "expires_at": card.expires_at.isoformat(),
         "last_error": card.last_error or None,
@@ -57,6 +72,25 @@ def _account(card, gateway):
     ):
         raise ProviderError("Comercio no válido para el alta de tarjeta.")
     card.sandbox = account["sandbox"] is True
+
+
+def _active_instrument(card, gateway, token=None):
+    instruments = [
+        item
+        for item in gateway.instruments(card.customer_id)
+        if item.get("active") is True and (not token or item.get("token") == token)
+    ]
+    if len(instruments) != 1 or not instruments[0].get("token"):
+        raise ProviderError("No hay un único instrumento activo confirmado.")
+    instrument = instruments[0]
+    mandate = instrument.get("mandate") or {}
+    if (
+        mandate.get("merchant_code") != card.merchant_code
+        or mandate.get("status") != "active"
+        or mandate.get("type") != "recurrent"
+    ):
+        raise ProviderError("No hay un mandato recurrente activo para este comercio.")
+    return instrument
 
 
 def _apply(card, data, gateway):
@@ -77,9 +111,7 @@ def _apply(card, data, gateway):
     card.setup_checkout_id = data["id"]
     status = data.get("status")
     if status == "PAID":
-        transaction_id = data.get("transaction_id")
-        if not transaction_id:
-            raise ProviderError("Falta la transacción del alta de tarjeta.")
+        transaction_id = checkout_transaction_id(data)
         detail = gateway.transaction(card.merchant_code, transaction_id)
         if (
             detail.get("id") != transaction_id
@@ -89,25 +121,20 @@ def _apply(card, data, gateway):
             or Decimal(str(detail.get("amount"))) != 1
         ):
             raise ProviderError("No se confirma la autorización de alta.")
+        if card.setup_transaction_id and card.setup_transaction_id != transaction_id:
+            raise ProviderError("Ha cambiado la transacción del alta.")
         source = (data.get("payment_instrument") or {}).get("token")
-        instruments = [
-            item
-            for item in gateway.instruments(card.customer_id)
-            if item.get("active") is True and (not source or item.get("token") == source)
-        ]
-        if len(instruments) != 1 or not instruments[0].get("token"):
-            raise ProviderError("No hay un único instrumento activo confirmado.")
-        instrument = instruments[0]
-        mandate = instrument.get("mandate") or {}
-        if (
-            mandate.get("merchant_code") != card.merchant_code
-            or mandate.get("status") != "active"
-            or mandate.get("type") != "recurrent"
-        ):
-            raise ProviderError("No hay un mandato recurrente activo para este comercio.")
-        card.token_ciphertext = cipher().encrypt(instrument["token"].encode()).decode()
+        instrument = _active_instrument(card, gateway, source)
+        if card.token_ciphertext and _decrypt_token(card) != instrument["token"]:
+            raise ProviderError("El instrumento verificado en el alta ha cambiado.")
+        token_ciphertext = cipher().encrypt(instrument["token"].encode()).decode()
+        bind_transaction(card.setup_checkout_id, transaction_id)
+        card.setup_transaction_id = transaction_id
+        card.token_ciphertext = token_ciphertext
         card.last4 = (instrument.get("card") or {}).get("last_4_digits") or ""
         card.status = "ready"
+    elif card.status == "ready":
+        raise ProviderError("SumUp devuelve un estado incompatible con el alta verificada.")
     elif status in {"EXPIRED", "FAILED"}:
         card.status = "expired" if status == "EXPIRED" else "failed"
     elif status != "PENDING":
@@ -164,18 +191,26 @@ def _start_reserved(card, submit, gateway):
     if not submit:
         return refresh_card(card.id, gateway)
     # The reservation was committed before POST. An unknown result is only recovered by GET.
-    try:
-        _account(card, gateway)
-        gateway.ensure_customer(card)
-        data = gateway.create_card_setup(card)
-        _apply(card, data, gateway)
-    except ProviderRejected:
-        card.status, card.uncertain = "failed", False
-        card.last_error = "SumUp ha rechazado el alta de tarjeta."
-    except ProviderError:
-        card.uncertain = True
-        card.last_error = "Alta pendiente de verificar; no se creará otra automáticamente."
-    card.save()
+    with transaction.atomic():
+        card = SavedCard.objects.select_for_update().get(pk=card.id)
+        try:
+            _account(card, gateway)
+            gateway.ensure_customer(card)
+            data = gateway.create_card_setup(card)
+        except ProviderRejected:
+            card.status, card.uncertain = "failed", False
+            card.last_error = "SumUp ha rechazado el alta de tarjeta."
+        except ProviderError:
+            card.uncertain = True
+            card.last_error = "Alta pendiente de verificar; no se creará otra automáticamente."
+        else:
+            try:
+                _apply(card, data, gateway)
+            except (ProviderError, InvalidOperation, TypeError, ValueError):
+                card.uncertain = True
+                card.last_error = "No se pudo verificar el instrumento guardado."
+        card.checked_at = timezone.now()
+        card.save()
     return card
 
 
@@ -224,21 +259,39 @@ def process_recurring(attempt_id, gateway=None):
             or attempt.uncertain
             or attempt.status != "pending"
             or not attempt.sumup_id
+            or attempt.expires_at <= timezone.now()
+            or attempt.payment.merchant_code != settings.SUMUP_MERCHANT_CODE
         ):
             return attempt
         try:
             token = token_for(attempt.payment.saved_card)
-        except ProviderError:
+            _active_instrument(attempt.payment.saved_card, gateway, token)
+        except (ProviderError, PaymentError):
+            _mark_error(attempt, "No se pudo verificar el mandato activo antes del cobro.")
+            _save_attempt(attempt)
+            enqueue_change(attempt)
             return attempt
         attempt.process_submitted_at = timezone.now()
         attempt.save(update_fields=["process_submitted_at"])
-    try:
-        data = gateway.process_card(attempt, token)
-        Attempt.objects.filter(pk=attempt.id).update(action_required=bool(data.get("next_step")))
-    except ProviderError:
-        # PUT can have succeeded; only the checkout/transaction will decide the outcome.
-        pass
-    return refresh_attempt(attempt_id, gateway)
+    with transaction.atomic():
+        payment = Payment.objects.select_for_update().get(pk=payment_id)
+        attempt.refresh_from_db()
+        if (
+            payment.cancel_requested_at
+            or attempt.closed_confirmed
+            or attempt.uncertain
+            or attempt.status != Attempt.Status.PENDING
+            or attempt.expires_at <= timezone.now()
+        ):
+            return refresh_attempt(attempt_id, gateway)
+        action_required = None
+        try:
+            data = gateway.process_card(attempt, token)
+            action_required = bool(data.get("next_step"))
+        except ProviderError:
+            # PUT can have succeeded; only the checkout/transaction will decide the outcome.
+            pass
+        return refresh_attempt(attempt_id, gateway, action_required=action_required)
 
 
 def cancel_recurring_order(data, gateway=None):
@@ -246,7 +299,11 @@ def cancel_recurring_order(data, gateway=None):
     from uuid import UUID
 
     from .models import Payment
-    from .services import cancel_attempt
+    from .services import (
+        SUBSCRIPTION_REFERENCE_PREFIX,
+        cancel_attempt,
+        request_payment_cancellation,
+    )
 
     if not isinstance(data, dict) or not isinstance(data.get("saved_card_id"), str):
         raise PaymentError("invalid_request", "Indica el pedido y la tarjeta guardada.")
@@ -257,6 +314,8 @@ def cancel_recurring_order(data, gateway=None):
     except (ValueError, SavedCard.DoesNotExist):
         raise PaymentError("card_not_found", "Tarjeta guardada no encontrada.", 404) from None
     normalized, amount, _ = validate_request(body, "cancel-order", installation_config())
+    if normalized["reference"].startswith(SUBSCRIPTION_REFERENCE_PREFIX):
+        raise PaymentError("reserved_reference", "Cancela la suscripción por su identificador.")
     with transaction.atomic():
         payment, _ = Payment.objects.get_or_create(
             reference=normalized["reference"],
@@ -275,8 +334,7 @@ def cancel_recurring_order(data, gateway=None):
             or payment.saved_card_id != card.id
         ):
             raise PaymentError("order_conflict", "La referencia pertenece a otro pedido.", 409)
-        payment.cancel_requested_at = payment.cancel_requested_at or timezone.now()
-        payment.save(update_fields=["cancel_requested_at"])
+        payment = request_payment_cancellation(payment)
     for attempt in payment.attempts.filter(closed_confirmed=False):
         cancel_attempt(attempt.id, None, gateway)
     return payment

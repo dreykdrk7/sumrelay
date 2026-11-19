@@ -32,6 +32,11 @@ def serialize_attempt(attempt):
         "expires_at": iso(attempt.expires_at),
         "last_checked_at": iso(attempt.last_checked_at),
         "last_error": attempt.last_error or None,
+        **(
+            {"dispute_detected_at": iso(attempt.dispute_detected_at)}
+            if attempt.dispute_detected_at
+            else {}
+        ),
         **({"action_required": attempt.action_required} if attempt.payment.saved_card_id else {}),
     }
 
@@ -54,11 +59,21 @@ def serialize_payment(payment):
         "merchant_code": payment.merchant_code,
         "status": current.get("status", "cancelled" if payment.cancel_requested_at else "pending"),
         "uncertain": uncertain if attempts else not bool(payment.cancel_requested_at),
-        "checkout_url": None if paid or uncertain else latest.get("checkout_url"),
+        "checkout_url": (
+            None if paid or uncertain or payment.cancel_requested_at else latest.get("checkout_url")
+        ),
         "latest_attempt_id": latest.get("id"),
         "refunded_amount": current.get("refunded_amount", "0.00"),
         "created_at": iso(payment.created_at),
         "attempts": attempts,
+        **(
+            {
+                "subscription_id": str(payment.subscription_id),
+                "scheduled_for": iso(payment.scheduled_for),
+            }
+            if payment.subscription_id
+            else {}
+        ),
         **(
             {
                 "saved_card_id": str(payment.saved_card_id),

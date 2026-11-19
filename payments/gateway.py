@@ -72,6 +72,8 @@ class SumUpGateway:
             if exc.status != 404:
                 raise ProviderError("No se pudo verificar el cliente de SumUp.") from None
             result = self._call(self.client.customers.create, customer_id=card.customer_id)
+        except Exception:
+            raise ProviderError("No se pudo verificar el cliente de SumUp.") from None
         if result.customer_id != card.customer_id:
             raise ProviderError("Cliente de SumUp incoherente.")
 
@@ -98,6 +100,8 @@ class SumUpGateway:
     def process_card(self, attempt, token):
         card = attempt.payment.saved_card
         account = self.account(attempt.payment.merchant_code)
+        if account["merchant_code"] != attempt.payment.merchant_code:
+            raise ProviderRejected("El comercio de SumUp no coincide con el pedido.")
         if settings.SUMUP_SANDBOX_ONLY and account["sandbox"] is not True:
             raise ProviderRejected("Solo se permite el comercio sandbox verificado.")
         return self._call(

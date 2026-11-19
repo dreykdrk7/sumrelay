@@ -1,7 +1,7 @@
 # Saved cards and recurring charges
 
-SumRelay provides payment primitives. Your application owns the subscription
-schedule, pricing, taxes, consent, cancellation interface, and customer access.
+SumRelay supports individual recurring charges and scheduled subscriptions.
+Your application owns pricing, taxes, consent, cancellation UI and customer access.
 Tokenization requires support on your SumUp merchant and customer authorization.
 
 ## Configuration
@@ -65,3 +65,57 @@ The setup authorization is distinct from the subscription price and does not
 fulfill an order. Consult SumUp's [tokenization guide](https://developer.sumup.com/online-payments/guides/tokenization-with-payment-sdk/)
 for provider behavior; verify authorization and refund state separately rather
 than inferring a refund from the card being ready.
+
+## Scheduled subscriptions
+
+Use the same backend credential for these routes. The application records payer
+consent and owns the plan, price, cancellation UI and access. SumRelay stores
+the agreed payment snapshot and runs the collection schedule.
+
+| Method and path | Result |
+| --- | --- |
+| `POST /api/v1/subscriptions/` | Create the schedule. Repeating the same reference and data returns the existing schedule. Changing those data with the same reference returns 409. |
+| `GET /api/v1/subscriptions/?reference=...` | Recover the subscription ID and current status by exact CRM reference. |
+| `GET /api/v1/subscriptions/{id}/` | Read status, next collection date and latest payment ID. |
+| `GET /api/v1/subscriptions/{id}/payments/` | Read up to 25 collections, newest first. Pass `next_before` as the next request's `before` query parameter. |
+| `POST /api/v1/subscriptions/{id}/cancel/` | Record cancellation immediately. The worker reconciles an in-flight collection and confirms any checkout closure with SumUp. |
+
+For creation send the five ordinary payment fields plus `saved_card_id`,
+`starts_on` (YYYY-MM-DD, today or later in UTC) and `interval_months` (1–12).
+`reference` identifies the subscription in your application. Keep it unique
+and persist it before sending the request. After a timeout, repeat the original
+request with the same terms to recover its ID. Creating a subscription records
+a schedule. Its collections are processed by the worker.
+
+Collections become eligible on their UTC date. A date such as January 31
+becomes February 28 or 29 and returns to March 31. The payment ID and
+`scheduled_for` trace each collection. Following a delayed successful collection,
+the schedule advances to the first future date on the original cadence. The
+worker does not issue a backlog of multiple collections at once.
+
+An unresolved collection holds the schedule on the current date. A verified
+closed collection without a full, undisputed payment leaves the schedule
+`blocked` with a `blocked_reason`. Subscription cancellation stops new
+collections. Poll the payment itself to determine whether an in-flight charge
+succeeded or was closed. Cancellation does not initiate a refund.
+
+When a pending attempt has `action_required=true`, contact the customer.
+SumRelay detects the challenge and tracks the result through reconciliation.
+To recover through a new customer-present payment, first verify closure of the
+old checkout and the absence of a verified charge. Once the old schedule is
+cancelled, a replacement schedule uses a fresh reference, consent and the
+agreed future start date. An automatic resubmission is never made after an
+ambiguous provider call.
+
+Subscribe to signed `payment.updated` notifications. Each scheduled payment
+includes `subscription_id` and `scheduled_for`. Deduplicate by event ID and
+re-read the payment before applying the current state. Validate it against the
+original subscription and authorize the cycle once in your own database,
+using a unique constraint on `(subscription_id, scheduled_for)`. The payment
+reference has the form `sumrelay-subscription:<UUID>:<YYYY-MM-DD>` and is
+reserved by SumRelay.
+
+A provider chargeback is exposed as `disputed`, with `dispute_detected_at` on
+the attempt. Handle this as an exception even if the collection was originally
+confirmed. Refund amounts retain their original meaning. A verified dispute
+remains visible if a later provider response omits the disputed event.

@@ -96,9 +96,12 @@ docker compose logs --tail=100 web worker setup
 docker compose exec web python manage.py check --deploy --fail-level ERROR
 ```
 
-`/health/` checks the database connection; it does not prove the worker is alive
-or SumUp is reachable. Monitor worker activity, the last successful reconciliation,
-uncertain attempts, and overdue/exhausted notifications. The admin can request a
+`/health/` checks the database connection. The authenticated
+`GET /api/v1/operations/status/` reports the last completed worker tick,
+reconciliation timestamps, uncertain attempts, exhausted deliveries and
+blocked subscriptions. A missing heartbeat or one older than 10 minutes
+returns 503. Monitor the reconciliation timestamps separately for provider
+connectivity and verification issues. The admin can request a
 reconciliation, check or cancel attempts, and open another delivery retry window.
 Audit records track admin actions but are not immutable against database administrators.
 

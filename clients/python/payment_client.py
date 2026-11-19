@@ -6,6 +6,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -41,6 +42,20 @@ class ConfirmedPayment:
     amount: Decimal
     currency: str
     merchant_code: str
+
+
+def _amount_for_request(amount, currency):
+    if (
+        not isinstance(amount, Decimal)
+        or not amount.is_finite()
+        or amount <= 0
+        or amount > Decimal("999999999.99")
+        or amount.as_tuple().exponent < -2
+    ):
+        raise ValueError("Usa un Decimal positivo, dentro de rango y con hasta dos decimales.")
+    if currency == "CLP" and amount != amount.to_integral_value():
+        raise ValueError("CLP exige un importe entero.")
+    return format(amount, ".0f" if currency == "CLP" else "f")
 
 
 class ProcessorClient:
@@ -122,26 +137,15 @@ class ProcessorClient:
         return_url: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        if (
-            not isinstance(amount, Decimal)
-            or not amount.is_finite()
-            or amount <= 0
-            or amount > Decimal("999999999.99")
-            or amount.as_tuple().exponent < -2
-        ):
-            raise ValueError("Usa un Decimal positivo, dentro de rango y con hasta dos decimales.")
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", idempotency_key):
             raise ValueError("Clave de idempotencia inválida.")
-        if currency == "CLP" and amount != amount.to_integral_value():
-            raise ValueError("CLP exige un importe entero.")
-        serialized_amount = format(amount, ".0f" if currency == "CLP" else "f")
         return self._request(
             "POST",
             "api/v1/payments/",
             headers={"Idempotency-Key": idempotency_key},
             json={
                 "reference": reference,
-                "amount": serialized_amount,
+                "amount": _amount_for_request(amount, currency),
                 "currency": currency,
                 "description": description,
                 "return_url": return_url,
@@ -154,6 +158,59 @@ class ProcessorClient:
 
     def get_payment_by_reference(self, reference: str) -> dict[str, Any]:
         return self._request("GET", "api/v1/payments/", params={"reference": reference})
+
+    def create_card_setup(self, *, reference: str, return_url: str) -> dict[str, Any]:
+        return self._request(
+            "POST", "api/v1/card-setups/", json={"reference": reference, "return_url": return_url}
+        )
+
+    def get_card_setup(self, card_id: str) -> dict[str, Any]:
+        return self._request("GET", f"api/v1/card-setups/{UUID(str(card_id))}/")
+
+    def create_subscription(
+        self,
+        *,
+        reference: str,
+        amount: Decimal,
+        currency: str,
+        description: str,
+        return_url: str,
+        saved_card_id: str,
+        starts_on: date,
+        interval_months: int,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "api/v1/subscriptions/",
+            json={
+                "reference": reference,
+                "amount": _amount_for_request(amount, currency),
+                "currency": currency,
+                "description": description,
+                "return_url": return_url,
+                "saved_card_id": str(UUID(str(saved_card_id))),
+                "starts_on": starts_on.isoformat(),
+                "interval_months": interval_months,
+            },
+        )
+
+    def get_subscription(self, subscription_id: str) -> dict[str, Any]:
+        return self._request("GET", f"api/v1/subscriptions/{UUID(str(subscription_id))}/")
+
+    def get_subscription_by_reference(self, reference: str) -> dict[str, Any]:
+        return self._request("GET", "api/v1/subscriptions/", params={"reference": reference})
+
+    def get_subscription_payments(
+        self, subscription_id: str, *, before: date | None = None
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"api/v1/subscriptions/{UUID(str(subscription_id))}/payments/",
+            params={"before": before.isoformat()} if before else None,
+        )
+
+    def cancel_subscription(self, subscription_id: str) -> dict[str, Any]:
+        return self._request("POST", f"api/v1/subscriptions/{UUID(str(subscription_id))}/cancel/")
 
 
 def verify_webhook(
@@ -220,7 +277,11 @@ def _money(value: Any) -> Decimal:
 
 def checkout_url_for_redirect(payment: dict[str, Any]) -> str | None:
     """Expose an open, current checkout to Next.js after the backend has created the payment."""
-    if payment.get("status") != "pending" or payment.get("uncertain") is not False:
+    if (
+        payment.get("status") != "pending"
+        or payment.get("uncertain") is not False
+        or payment.get("cancel_requested") is True
+    ):
         return None
     attempts = payment.get("attempts")
     if not isinstance(attempts, list) or not all(isinstance(a, dict) for a in attempts):

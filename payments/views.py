@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+from datetime import date, timedelta
 from functools import wraps
 
 from django.conf import settings
@@ -11,9 +12,10 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from .models import Attempt, Payment
-from .serializers import serialize_attempt, serialize_payment
+from .models import Attempt, Notification, Payment, ReconciliationRun, Subscription, WorkerHeartbeat
+from .serializers import iso, serialize_attempt, serialize_payment
 from .services import create_payment
+from .subscriptions import cancel_subscription, create_subscription, serialize_subscription
 from .validation import PaymentError
 
 
@@ -144,20 +146,16 @@ def api_schema(request):
 @require_POST
 @api_view
 def payment_cancel(request, payment_id):
-    from django.db import transaction
+    from .services import cancel_attempt, request_payment_cancellation
 
-    from .services import cancel_attempt
-
-    with transaction.atomic():
-        payment = Payment.objects.select_for_update().filter(pk=payment_id).first()
-        if payment is None:
-            raise PaymentError("not_found", "Pago no encontrado.", 404)
-        if not payment.saved_card_id:
-            raise PaymentError(
-                "not_recurring", "La cancelación API se limita a cargos recurrentes.", 409
-            )
-        payment.cancel_requested_at = payment.cancel_requested_at or timezone.now()
-        payment.save(update_fields=["cancel_requested_at"])
+    payment = Payment.objects.filter(pk=payment_id).first()
+    if payment is None:
+        raise PaymentError("not_found", "Pago no encontrado.", 404)
+    if not payment.saved_card_id:
+        raise PaymentError(
+            "not_recurring", "La cancelación API se limita a cargos recurrentes.", 409
+        )
+    payment = request_payment_cancellation(payment)
     for attempt in payment.attempts.filter(closed_confirmed=False):
         cancel_attempt(attempt.id, None)
     return JsonResponse(serialize_payment(payment))
@@ -170,6 +168,94 @@ def recurring_cancel(request):
     from .cards import cancel_recurring_order
 
     return JsonResponse(serialize_payment(cancel_recurring_order(read_json(request))))
+
+
+@csrf_exempt
+@require_http_methods(["POST", "GET"])
+@api_view
+def subscriptions(request):
+    if request.method == "GET":
+        reference = request.GET.get("reference")
+        if not reference:
+            raise PaymentError("reference_required", "Indica una referencia exacta.")
+        subscription = Subscription.objects.filter(reference=reference).first()
+        if subscription is None:
+            raise PaymentError("not_found", "Suscripción no encontrada.", 404)
+        return JsonResponse(serialize_subscription(subscription))
+    subscription, created = create_subscription(read_json(request))
+    response = JsonResponse(serialize_subscription(subscription), status=201 if created else 200)
+    response["Location"] = f"/api/v1/subscriptions/{subscription.id}/"
+    return response
+
+
+def get_subscription(subscription_id):
+    subscription = Subscription.objects.filter(pk=subscription_id).first()
+    if subscription is None:
+        raise PaymentError("not_found", "Suscripción no encontrada.", 404)
+    return subscription
+
+
+@require_GET
+@api_view
+def subscription_detail(request, subscription_id):
+    return JsonResponse(serialize_subscription(get_subscription(subscription_id)))
+
+
+@require_GET
+@api_view
+def subscription_payments(request, subscription_id):
+    subscription = get_subscription(subscription_id)
+    payments = subscription.payments.order_by("-scheduled_for")
+    if "before" in request.GET:
+        try:
+            before = date.fromisoformat(request.GET["before"])
+            if before.isoformat() != request.GET["before"]:
+                raise ValueError
+        except ValueError:
+            raise PaymentError("invalid_date", "Usa una fecha AAAA-MM-DD.") from None
+        payments = payments.filter(scheduled_for__lt=before)
+    page = list(payments[:26])
+    return JsonResponse(
+        {
+            "id": str(subscription.id),
+            "payments": [serialize_payment(payment) for payment in page[:25]],
+            "next_before": iso(page[24].scheduled_for) if len(page) > 25 else None,
+        }
+    )
+
+
+@csrf_exempt
+@require_POST
+@api_view
+def subscription_cancel(request, subscription_id):
+    return JsonResponse(serialize_subscription(cancel_subscription(subscription_id)))
+
+
+@require_GET
+@api_view
+def operational_status(request):
+    heartbeat = WorkerHeartbeat.objects.filter(pk=1).first()
+    checked_at = heartbeat.checked_at if heartbeat else None
+    healthy = checked_at is not None and checked_at > timezone.now() - timedelta(minutes=10)
+    latest = ReconciliationRun.objects.first()
+    last_success = ReconciliationRun.objects.filter(success=True).first()
+    return JsonResponse(
+        {
+            "status": "ok" if healthy else "worker_stale",
+            "worker_checked_at": iso(checked_at),
+            "last_reconciliation_started_at": iso(latest.started_at if latest else None),
+            "last_reconciliation_finished_at": iso(latest.finished_at if latest else None),
+            "last_successful_reconciliation_at": iso(
+                last_success.finished_at if last_success else None
+            ),
+            "uncertain_attempts": Attempt.objects.filter(uncertain=True).count(),
+            "exhausted_notifications": Notification.objects.filter(exhausted=True).count(),
+            "blocked_subscriptions": Subscription.objects.filter(
+                status=Subscription.Status.BLOCKED
+            ).count(),
+        },
+        status=200 if healthy else 503,
+    )
 
 
 @csrf_exempt
