@@ -1,6 +1,6 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from datetime import timezone as utc_timezone
 from threading import Barrier
 
@@ -15,7 +15,12 @@ from payments.cards import process_recurring
 from payments.gateway import ProviderError
 from payments.models import Attempt, AuditLog, Notification, ReconciliationRun, Subscription
 from payments.services import create_payment, refresh_attempt
-from payments.subscriptions import cancel_subscription, create_subscription, evaluate_subscription
+from payments.subscriptions import (
+    cancel_subscription,
+    create_subscription,
+    evaluate_subscription,
+    next_occurrence,
+)
 from payments.worker import worker_tick
 from tests.test_contract import auth, validate_contract
 from tests.test_recurring import RecurringGateway, card  # noqa: F401
@@ -43,7 +48,18 @@ def post(client, path, body):
 
 
 @pytest.mark.django_db
-def test_api_worker_renewals_and_signed_notifications(client, installation, plan, clock):
+@pytest.mark.parametrize(
+    ("cadence", "span", "second", "third"),
+    [
+        ({"interval_months": 1}, 28, "2026-02-28", "2026-03-31"),
+        ({"interval_days": 30}, 30, "2026-03-02", "2026-04-01"),
+    ],
+)
+def test_api_worker_renewals_and_signed_notifications(
+    client, installation, plan, clock, cadence, span, second, third
+):
+    plan.pop("interval_months")
+    plan.update(cadence)
     url = "/api/v1/subscriptions/"
     expected = client.post(url, "{}", content_type="application/json").status_code
     assert expected == 401
@@ -75,8 +91,11 @@ def test_api_worker_renewals_and_signed_notifications(client, installation, plan
         worker_tick(gateway, sender)
         clock[0] += timedelta(seconds=31)
         worker_tick(gateway, sender)
-        assert client.get(detail, **auth()).json()["next_due_on"] == "2026-02-28"
-        clock[0] += timedelta(days=28)
+        assert client.get(detail, **auth()).json()["next_due_on"] == second
+        clock[0] += timedelta(days=span - 1)
+        worker_tick(gateway, sender)
+        assert gateway.creates == 1
+        clock[0] += timedelta(days=1)
         worker_tick(gateway, sender)
         clock[0] += timedelta(seconds=31)
         worker_tick(gateway, sender)
@@ -84,10 +103,10 @@ def test_api_worker_renewals_and_signed_notifications(client, installation, plan
     assert gateway.creates == gateway.processes == 2
     page = client.get(detail + "payments/", **auth()).json()
     validate_contract("SubscriptionPayments", page)
-    assert [p["scheduled_for"] for p in page["payments"]] == ["2026-02-28", "2026-01-31"]
-    assert len(client.get(detail + "payments/?before=2026-02-28", **auth()).json()["payments"]) == 1
+    assert [p["scheduled_for"] for p in page["payments"]] == [second, "2026-01-31"]
+    assert len(client.get(detail + f"payments/?before={second}", **auth()).json()["payments"]) == 1
     assert client.get(detail + "payments/?before=x", **auth()).status_code == 400
-    assert client.get(detail, **auth()).json()["next_due_on"] == "2026-03-31"
+    assert client.get(detail, **auth()).json()["next_due_on"] == third
     assert post(client, url, plan).json()["id"] == subscription_id
     assert not Notification.objects.filter(delivered_at__isnull=True).exists()
     paid = [event["payment"] for event in events if event["payment"]["status"] == "paid"]
@@ -108,6 +127,41 @@ def test_api_worker_renewals_and_signed_notifications(client, installation, plan
         assert result.status_code == 200
         assert result.json()["status"] == "cancelled"
     assert AuditLog.objects.filter(action="subscription_cancelled").count() == 1
+
+
+@pytest.mark.django_db
+def test_fixed_interval_contract_and_idempotency(client, installation, plan):
+    url = "/api/v1/subscriptions/"
+    original = dict(plan)
+    plan.pop("interval_months")
+    for interval in [
+        {},
+        {"interval_days": True},
+        {"interval_days": 31},
+        {"interval_days": None},
+        {"interval_days": 30, "interval_months": 1},
+    ]:
+        assert post(client, url, {**plan, **interval}).status_code == 400
+    assert not Subscription.objects.exists()
+    fixed = {**plan, "interval_days": 30}
+    assert post(client, url, fixed).status_code == 201
+    assert post(client, url, fixed).status_code == 200
+    assert post(client, url, original).status_code == 409
+    assert Subscription.objects.count() == 1
+
+
+@pytest.mark.parametrize(
+    ("start", "today", "expected"),
+    [
+        (date(2028, 1, 31), date(2028, 1, 31), date(2028, 3, 1)),
+        (date(2026, 3, 1), date(2026, 3, 1), date(2026, 3, 31)),
+        (date(2026, 10, 1), date(2026, 10, 1), date(2026, 10, 31)),
+        (date(2026, 1, 31), date(2026, 4, 6), date(2026, 5, 1)),
+    ],
+)
+def test_fixed_calendar_uses_dates_and_skips_overdue_cycles(start, today, expected):
+    sub = Subscription(starts_on=start, interval_days=30)
+    assert next_occurrence(sub, today) == expected
 
 
 @pytest.mark.django_db

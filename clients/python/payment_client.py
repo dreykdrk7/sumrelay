@@ -177,8 +177,16 @@ class ProcessorClient:
         return_url: str,
         saved_card_id: str,
         starts_on: date,
-        interval_months: int,
+        interval_months: int | None = None,
+        interval_days: int | None = None,
     ) -> dict[str, Any]:
+        if interval_months is not None and interval_days is not None:
+            raise ValueError("Specify only one subscription interval")
+        cadence = (
+            {"interval_months": interval_months}
+            if interval_months is not None
+            else {"interval_days": 30 if interval_days is None else interval_days}
+        )
         return self._request(
             "POST",
             "api/v1/subscriptions/",
@@ -190,7 +198,7 @@ class ProcessorClient:
                 "return_url": return_url,
                 "saved_card_id": str(UUID(str(saved_card_id))),
                 "starts_on": starts_on.isoformat(),
-                "interval_months": interval_months,
+                **cadence,
             },
         )
 

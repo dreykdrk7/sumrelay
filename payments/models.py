@@ -116,7 +116,8 @@ class Subscription(models.Model):
     description = models.CharField(max_length=500)
     return_url = models.URLField(max_length=2048)
     starts_on = models.DateField()
-    interval_months = models.PositiveSmallIntegerField()
+    interval_months = models.PositiveSmallIntegerField(null=True, blank=True)
+    interval_days = models.PositiveSmallIntegerField(null=True, blank=True)
     next_due_on = models.DateField()
     check_after = models.DateTimeField(default=timezone.now)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
@@ -129,7 +130,15 @@ class Subscription(models.Model):
         constraints = [
             models.CheckConstraint(condition=Q(amount__gt=0), name="subscription_positive"),
             models.CheckConstraint(
-                condition=Q(interval_months__range=(1, 12)), name="subscription_interval"
+                condition=(
+                    Q(
+                        interval_months__isnull=False,
+                        interval_months__range=(1, 12),
+                        interval_days__isnull=True,
+                    )
+                    | Q(interval_months__isnull=True, interval_days__isnull=False, interval_days=30)
+                ),
+                name="subscription_period_valid",
             ),
         ]
 

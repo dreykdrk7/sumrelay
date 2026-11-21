@@ -24,15 +24,21 @@ PAYMENT_FIELDS = ("reference", "amount", "currency", "description", "return_url"
 
 
 def create_subscription(data):
-    if not isinstance(data, dict) or set(data) != {
-        *PAYMENT_FIELDS,
-        "saved_card_id",
-        "starts_on",
-        "interval_months",
-    }:
-        raise PaymentError("invalid_request", "Envía los campos documentados de la suscripción.")
-    interval = data["interval_months"]
-    if type(interval) is not int or not 1 <= interval <= 12:
+    fields_required = {*PAYMENT_FIELDS, "saved_card_id", "starts_on"}
+    if not isinstance(data, dict) or set(data) not in (
+        fields_required | {"interval_days"},
+        fields_required | {"interval_months"},
+    ):
+        raise PaymentError(
+            "invalid_request", "Indica un solo intervalo en el calendario de la suscripción."
+        )
+    days, months = data.get("interval_days"), data.get("interval_months")
+    if "interval_days" in data:
+        if type(days) is not int or days != 30:
+            raise PaymentError(
+                "invalid_interval", "El intervalo diario admitido es de 30 días naturales."
+            )
+    elif type(months) is not int or not 1 <= months <= 12:
         raise PaymentError("invalid_interval", "El intervalo debe ser de 1 a 12 meses.")
     try:
         starts = date.fromisoformat(data["starts_on"])
@@ -57,7 +63,8 @@ def create_subscription(data):
         "merchant_code": merchant,
         "saved_card_id": card_id,
         "starts_on": starts,
-        "interval_months": interval,
+        "interval_months": months,
+        "interval_days": days,
     }
     with transaction.atomic():
         reference = normalized["reference"]
@@ -100,7 +107,11 @@ def serialize_subscription(subscription):
         "description": subscription.description,
         "return_url": subscription.return_url,
         "starts_on": iso(subscription.starts_on),
-        "interval_months": subscription.interval_months,
+        **(
+            {"interval_days": subscription.interval_days}
+            if subscription.interval_days is not None
+            else {"interval_months": subscription.interval_months}
+        ),
         "next_due_on": iso(
             subscription.next_due_on if subscription.status == Subscription.Status.ACTIVE else None
         ),
@@ -128,7 +139,15 @@ def cancel_subscription(subscription_id):
         return subscription
 
 
-def next_occurrence(starts, interval, today):
+def next_occurrence(subscription, today):
+    starts = subscription.starts_on
+    if today < starts:
+        return starts
+    if subscription.interval_days is not None:
+        step = subscription.interval_days
+        periods = (today - starts).days // step + 1
+        return starts + timedelta(days=periods * step)
+    interval = subscription.interval_months
     elapsed = (today.year - starts.year) * 12 + today.month - starts.month
     months = starts.year * 12 + starts.month - 1 + (elapsed // interval) * interval
     year, month = divmod(months, 12)
@@ -161,7 +180,7 @@ def evaluate_subscription(subscription_id, config, now):
                 and attempt.transaction_id
                 and attempt.paid_at
             ):
-                sub.next_due_on = next_occurrence(sub.starts_on, sub.interval_months, today)
+                sub.next_due_on = next_occurrence(sub, today)
                 sub.save(update_fields=["next_due_on"])
                 return
             if attempt.uncertain or not attempt.closed_confirmed:

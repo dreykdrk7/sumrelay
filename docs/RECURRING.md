@@ -81,14 +81,20 @@ the agreed payment snapshot and runs the collection schedule.
 | `POST /api/v1/subscriptions/{id}/cancel/` | Record cancellation immediately. The worker reconciles an in-flight collection and confirms any checkout closure with SumUp. |
 
 For creation send the five ordinary payment fields plus `saved_card_id`,
-`starts_on` (YYYY-MM-DD, today or later in UTC) and `interval_months` (1–12).
+`starts_on` (YYYY-MM-DD, today or later in UTC) and one schedule: `interval_days: 30` for fixed 30-day terms, or
+`interval_months` (1–12) for calendar-month agreements. New Python client
+calls default to 30 days and send the interval explicitly.
 `reference` identifies the subscription in your application. Keep it unique
 and persist it before sending the request. After a timeout, repeat the original
 request with the same terms to recover its ID. Creating a subscription records
 a schedule. Its collections are processed by the worker.
 
-Collections become eligible on their UTC date. A date such as January 31
-becomes February 28 or 29 and returns to March 31. The payment ID and
+Collections become eligible on their UTC date. Thirty-day cycles count calendar
+dates from the first due date. A January 31, 2026 start renews on March 2 and
+April 1. Monthly schedules keep their original convention: January 31 becomes
+February 28 or 29 and returns to March 31. Migration 0006 preserves existing
+schedules and payment history. Changing the interval on a repeated reference
+returns a conflict. The payment ID and
 `scheduled_for` trace each collection. Following a delayed successful collection,
 the schedule advances to the first future date on the original cadence. The
 worker does not issue a backlog of multiple collections at once.

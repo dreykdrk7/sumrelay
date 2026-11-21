@@ -1691,8 +1691,7 @@
           "description",
           "return_url",
           "saved_card_id",
-          "starts_on",
-          "interval_months"
+          "starts_on"
         ],
         "properties": {
           "reference": {
@@ -1751,9 +1750,26 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 12
+          },
+          "interval_days": {
+            "type": "integer",
+            "const": 30,
+            "description": "Ciclo de 30 días naturales consecutivos desde starts_on (fecha UTC)."
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "interval_months"
+            ]
+          },
+          {
+            "required": [
+              "interval_days"
+            ]
+          }
+        ]
       },
       "Subscription": {
         "type": "object",
@@ -1766,7 +1782,6 @@
           "return_url",
           "saved_card_id",
           "starts_on",
-          "interval_months",
           "merchant_code",
           "next_due_on",
           "status",
@@ -1873,9 +1888,26 @@
               "null"
             ],
             "format": "date-time"
+          },
+          "interval_days": {
+            "type": "integer",
+            "const": 30,
+            "description": "Ciclo de 30 días naturales consecutivos desde starts_on (fecha UTC)."
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "interval_months"
+            ]
+          },
+          {
+            "required": [
+              "interval_days"
+            ]
+          }
+        ]
       },
       "SubscriptionPayments": {
         "type": "object",

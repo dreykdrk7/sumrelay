@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 from copy import deepcopy
+from datetime import date
 from decimal import Decimal
 from unittest.mock import patch
 from uuid import uuid4
@@ -41,6 +42,37 @@ def expected_order(snapshot):
         "currency": "EUR",
         "merchant_code": settings.SUMUP_MERCHANT_CODE,
     }
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({}, {"interval_days": 30}),
+        ({"interval_days": 30}, {"interval_days": 30}),
+        ({"interval_months": 3}, {"interval_months": 3}),
+    ],
+)
+def test_subscription_client_sends_one_explicit_calendar(options, expected):
+    def receive(request):
+        data = json.loads(request.content)
+        assert {k: v for k, v in data.items() if k.startswith("interval_")} == expected
+        return httpx.Response(201, json={"id": str(uuid4())})
+
+    with ProcessorClient(
+        "http://localhost:8000", settings.SAAS_API_KEYS[0], transport=httpx.MockTransport(receive)
+    ) as client:
+        fields = dict(
+            reference="PLAN",
+            amount=Decimal("22.99"),
+            currency="EUR",
+            description="Plan",
+            return_url="https://example.invalid/return",
+            starts_on=date(2026, 1, 31),
+            saved_card_id=str(uuid4()),
+        )
+        client.create_subscription(**fields, **options)
+        with pytest.raises(ValueError):
+            client.create_subscription(**fields, interval_months=1, interval_days=30)
 
 
 def test_client_sends_server_key_decimal_and_idempotency_without_browser_data():
