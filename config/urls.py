@@ -14,6 +14,7 @@ urlpatterns = [
     path("api/v1/payments/<uuid:payment_id>/cancel/", views.payment_cancel),
     path("api/v1/card-setups/", views.card_setups),
     path("api/v1/card-setups/<uuid:card_id>/", views.card_detail),
+    path("api/v1/card-setups/<uuid:card_id>/snapshot/", views.card_snapshot),
     path("api/v1/recurring-payments/", views.recurring_payments),
     path("api/v1/recurring-payments/cancel/", views.recurring_cancel),
     path("api/v1/subscriptions/", views.subscriptions),

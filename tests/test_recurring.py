@@ -257,3 +257,25 @@ def test_null_card_id_is_rejected_before_creating_any_payment(client, installati
     )
     assert response.status_code == 400
     assert not Attempt.objects.exists()
+
+
+@pytest.mark.django_db
+def test_card_snapshot_preserves_recorded_state_without_gateway(client, card, monkeypatch):
+    from uuid import uuid4
+
+    from tests.test_contract import auth, validate_contract
+
+    def unexpected_gateway(*args, **kwargs):
+        pytest.fail("A snapshot must not open the provider adapter")
+
+    monkeypatch.setattr("payments.cards.SumUpGateway", unexpected_gateway)
+    path = f"/api/v1/card-setups/{card.pk}/snapshot/"
+    assert client.get(path).status_code == 401
+    assert client.get(f"/api/v1/card-setups/{uuid4()}/snapshot/", **auth()).status_code == 404
+    before = serialize_card(card)
+    result = client.get(path, **auth())
+    assert result.status_code == 200
+    validate_contract("CardSetup", result.json())
+    assert result.json() == before
+    card.refresh_from_db()
+    assert serialize_card(card) == before

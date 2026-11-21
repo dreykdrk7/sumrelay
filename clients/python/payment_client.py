@@ -167,6 +167,9 @@ class ProcessorClient:
     def get_card_setup(self, card_id: str) -> dict[str, Any]:
         return self._request("GET", f"api/v1/card-setups/{UUID(str(card_id))}/")
 
+    def get_card_setup_snapshot(self, card_id: str) -> dict[str, Any]:
+        return self._request("GET", f"api/v1/card-setups/{UUID(str(card_id))}/snapshot/")
+
     def create_subscription(
         self,
         *,

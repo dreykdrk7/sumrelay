@@ -101,6 +101,18 @@ def card_setups(request):
 
 @require_GET
 @api_view
+def card_snapshot(request, card_id):
+    from .cards import serialize_card
+    from .models import SavedCard
+
+    card = SavedCard.objects.filter(pk=card_id).first()
+    if card is None:
+        raise PaymentError("not_found", "Alta no encontrada.", 404)
+    return JsonResponse(serialize_card(card))
+
+
+@require_GET
+@api_view
 def card_detail(request, card_id):
     from .cards import refresh_card, serialize_card
     from .models import SavedCard

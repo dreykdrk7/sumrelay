@@ -474,6 +474,54 @@
         }
       }
     },
+    "/api/v1/card-setups/{card_id}/snapshot/": {
+      "get": {
+        "summary": "Consultar el último estado registrado del instrumento, sin conexión al proveedor.",
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Último estado guardado, incluido cuándo se comprobó.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardSetup"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Estado verificado o pendiente de comprobación.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/recurring-payments/": {
       "post": {
         "summary": "Crear o recuperar un cargo con tarjeta guardada; no reenvía un PUT incierto.",

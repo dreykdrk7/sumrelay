@@ -34,6 +34,9 @@ See the [OpenAPI contract](openapi.json) for complete request and response schem
 3. `GET /api/v1/card-setups/{id}/`: verify the provider's customer, merchant,
    amount, currency, transaction, and active recurring instrument/mandate. Only
    then is the card `ready` with `uncertain=false`. Tokens are encrypted at rest.
+   To check the recorded reference, sandbox flag and time of the last verification
+   without contacting SumUp, use `GET /api/v1/card-setups/{id}/snapshot/`
+   or `get_card_setup_snapshot(id)`. It reports the state already in the database.
 4. `POST /api/v1/recurring-payments/`: send the five ordinary payment fields plus
    `saved_card_id` and `Idempotency-Key`. SumRelay creates and processes a checkout
    for that customer, then verifies checkout and `RECURRING` transaction state.
